@@ -10,5 +10,5 @@ pyodbc
 pandas
 openpyxl
 pyyaml
-altair>=5.0.0,<6
+altair>=4.2.0,<5
 streamlit
