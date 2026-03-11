@@ -478,7 +478,7 @@ def main():
     ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
 
     st.sidebar.markdown("---")
-    alinear = st.sidebar.toggle("Lunes vs Lunes (comparativo 2025)", value=True)
+    alinear = st.sidebar.checkbox("Lunes vs Lunes (comparativo 2025)", value=True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
     if f_inicio and f_fin:
