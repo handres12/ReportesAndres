@@ -10,11 +10,12 @@ import calendar
 # Cargar variables de entorno
 load_dotenv()
 
-# Compatibilidad: en Streamlit 1.19 (ej. Cloud) no existen toggle ni hide_index; en versiones nuevas sí
+# Compatibilidad: en Streamlit 1.19 (Cloud) toggle existe pero falla al llamarlo; en versiones nuevas funciona
 def _sidebar_toggle(label, value=True):
-    if hasattr(st.sidebar, "toggle"):
+    try:
         return st.sidebar.toggle(label, value=value)
-    return st.sidebar.checkbox(label, value=value)
+    except Exception:
+        return st.sidebar.checkbox(label, value=value)
 
 def _st_dataframe(df, **kwargs):
     try:
