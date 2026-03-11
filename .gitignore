@@ -1,0 +1,13 @@
+# No subir contraseñas ni entornos
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Opcional: si no quieres subir la base a GitHub, descomenta la línea siguiente
+# bi_local_data.db

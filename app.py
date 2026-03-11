@@ -1,0 +1,779 @@
+import streamlit as st
+import pandas as pd
+import os
+import base64
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+from datetime import date, timedelta
+import calendar
+
+# Cargar variables de entorno
+load_dotenv()
+
+# Configuración de página
+st.set_page_config(page_title="Dashboard BI - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+
+# --- Estilo: tipografía clara, paleta profesional, sin tocar tablas ni valores ---
+BRAND_CSS = """
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap');
+  :root {
+    --acr-red: #C41E3A;
+    --acr-red-dark: #9E1830;
+    --acr-gold: #B8860B;
+    --acr-green: #1a6b1a;
+    --acr-cream: #FFFBF5;
+    --acr-cream-dark: #F5EDE4;
+    --acr-brown: #1a1510;
+    --acr-white: #FFFFFF;
+    --text-primary: #1a1a1a;
+    --text-secondary: #4a4a4a;
+    --bg-sidebar: #f0f2f6;
+    --border-sidebar: #C41E3A;
+    --font-head: 'Plus Jakarta Sans', sans-serif;
+    --font-body: 'Source Sans 3', sans-serif;
+  }
+  .stApp {
+    background: linear-gradient(180deg, #FFFCF8 0%, var(--acr-cream) 12%, var(--acr-cream) 100%);
+    font-family: var(--font-body);
+    font-size: 1.0625rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  header[data-testid="stHeader"] {
+    background: linear-gradient(90deg, var(--acr-red) 0%, var(--acr-red-dark) 100%);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  }
+  .main .block-container { padding-top: 1.75rem; padding-bottom: 2rem; max-width: 100%; }
+
+  /* SIDEBAR */
+  [data-testid="stSidebar"] {
+    background: var(--bg-sidebar) !important;
+    border-right: 4px solid var(--border-sidebar) !important;
+  }
+  [data-testid="stSidebar"] [data-testid="stMarkdown"] { color: var(--text-primary) !important; font-family: var(--font-head) !important; font-size: 1.05rem !important; font-weight: 700 !important; }
+  [data-testid="stSidebar"] label { color: var(--text-primary) !important; font-size: 1rem !important; font-weight: 600 !important; }
+  [data-testid="stSidebar"] .stRadio label { color: var(--text-primary) !important; font-size: 1rem !important; font-weight: 600 !important; }
+  [data-testid="stSidebar"] .stSelectbox label, [data-testid="stSidebar"] .stMultiSelect label { color: var(--text-primary) !important; font-size: 1rem !important; }
+  [data-testid="stSidebar"] p, [data-testid="stSidebar"] span { color: var(--text-secondary) !important; font-size: 0.95rem !important; }
+  [data-testid="stSidebar"] .stCaptionContainer { color: var(--text-secondary) !important; font-size: 0.9rem !important; }
+  [data-testid="stSidebar"] .stRadio > div { gap: 0.6rem; }
+  [data-testid="stSidebar"] section [data-testid="stVerticalBlock"] > div { padding: 0.25rem 0; }
+  [data-testid="stSidebar"] div[data-testid="stMarkdown"] p { font-size: 1rem !important; color: var(--text-primary) !important; font-weight: 600 !important; }
+  [data-testid="stSidebar"] button { font-size: 1rem !important; font-weight: 600 !important; }
+  [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label { font-size: 1.05rem !important; }
+
+  /* Cabecera del informe */
+  .brand-header { display: flex; align-items: center; gap: 16px; margin-bottom: 0.25rem; }
+  .brand-logo { width: 96px; height: 96px; border-radius: 14px; object-fit: contain; background: #fff; padding: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .brand-title { font-family: var(--font-head); font-size: 2rem; font-weight: 800; color: var(--acr-brown); letter-spacing: -0.02em; line-height: 1.25; }
+  .brand-subtitle { font-family: var(--font-body); color: var(--text-secondary); font-size: 1.05rem; margin-bottom: 1.5rem; font-weight: 500; letter-spacing: 0.01em; }
+
+  /* KPI / Metric cards: estilo tipo tarjetas ejecutivas */
+  .kpi-card {
+    background: var(--acr-white);
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    border-left: 4px solid var(--acr-red);
+    margin-bottom: 0.5rem;
+  }
+  .kpi-card.gold { border-left-color: var(--acr-gold); }
+  .kpi-card.green { border-left-color: var(--acr-green); }
+  .kpi-label { font-size: 1rem; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+  .kpi-value { font-size: 1.65rem; font-weight: 800; color: var(--acr-brown); }
+  .kpi-delta { font-size: 1rem; margin-top: 4px; font-weight: 600; }
+  .kpi-delta.up { color: var(--acr-green); }
+  .kpi-delta.down { color: var(--acr-red); }
+
+  /* Tarjetas de métricas: altura fija igual, sin recorte de valores */
+  div[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #ffffff 0%, #f2f4f8 100%);
+    border-radius: 16px;
+    padding: 1.4rem 1.5rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.06);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    overflow: visible !important;
+    min-width: 12rem;
+    height: 8rem !important;
+    min-height: 8rem !important;
+    box-sizing: border-box;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) {
+    display: flex !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) > div {
+    flex: 1;
+    min-height: 8rem !important;
+    height: 8rem !important;
+  }
+  div[data-testid="stMetric"]:hover {
+    box-shadow: 0 8px 28px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
+    transform: translateY(-2px);
+  }
+  div[data-testid="stMetric"] label {
+    font-family: var(--font-head) !important;
+    font-size: 0.8rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    color: #5f6368 !important;
+  }
+  div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-family: var(--font-head) !important;
+    font-size: 1.6rem !important;
+    font-weight: 800 !important;
+    color: var(--acr-brown) !important;
+    letter-spacing: -0.03em;
+    line-height: 1.25;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+  }
+  div[data-testid="stMetric"] [data-testid="stMetricValue"] span {
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+  div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+    font-family: var(--font-body) !important;
+    font-size: 0.95rem !important;
+    font-weight: 700 !important;
+    margin-top: 0.5rem !important;
+    padding: 0.28rem 0.6rem !important;
+    border-radius: 8px !important;
+    display: inline-block !important;
+  }
+  /* Primera tarjeta: estilo destacado, misma altura fija */
+  div[data-testid="stHorizontalBlock"] > div:first-child div[data-testid="stMetric"]:first-of-type {
+    background: linear-gradient(145deg, #3d4554 0%, #2a303c 100%) !important;
+    border: none !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.08);
+    height: 8rem !important;
+    min-height: 8rem !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:first-child div[data-testid="stMetric"]:first-of-type:hover {
+    box-shadow: 0 12px 32px rgba(0,0,0,0.18), 0 4px 12px rgba(0,0,0,0.08);
+  }
+  div[data-testid="stHorizontalBlock"] > div:first-child div[data-testid="stMetric"]:first-of-type label {
+    color: #b8bcc8 !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:first-child div[data-testid="stMetric"]:first-of-type [data-testid="stMetricValue"] {
+    font-family: var(--font-head) !important;
+    color: #ffffff !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:first-child div[data-testid="stMetric"]:first-of-type [data-testid="stMetricDelta"] {
+    color: #e0e4ea !important;
+  }
+  /* Segunda tarjeta: contorno oscuro, valor y % en la misma línea, % sin recuadro */
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #fafbfc 0%, #f0f2f6 100%) !important;
+    border: 2px solid #3d4554 !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08), 0 0 0 1px rgba(61,69,84,0.15) !important;
+    height: 8rem !important;
+    min-height: 8rem !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"]:hover {
+    box-shadow: 0 8px 28px rgba(0,0,0,0.1), 0 0 0 1px rgba(61,69,84,0.2) !important;
+  }
+  /* Segunda tarjeta: valor y % en la misma fila (grid), % sin recuadro */
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] {
+    display: grid !important;
+    grid-template-columns: 1fr auto !important;
+    grid-template-rows: auto 1fr !important;
+    align-content: center !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] label {
+    grid-column: 1 / -1 !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    grid-column: 1 !important;
+    grid-row: 2 !important;
+    align-self: baseline !important;
+    margin-bottom: 0 !important;
+  }
+  div[data-testid="stHorizontalBlock"] > div:nth-child(2) div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+    grid-column: 2 !important;
+    grid-row: 2 !important;
+    align-self: baseline !important;
+    margin-top: 0 !important;
+    margin-left: 0.5rem !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Tablas: estilo reporte (cabecera gris, bordes, agrupación) */
+  .dataframe thead tr th {
+    background: #3d4554 !important;
+    color: #fff !important; font-weight: 700 !important;
+    padding: 12px 14px !important; font-size: 1rem !important;
+    border: 1px solid #2f3644 !important;
+  }
+  .dataframe tbody tr:hover { background: var(--acr-cream-dark) !important; }
+  .dataframe tbody tr:nth-child(even) { background: #faf9f7 !important; }
+  .dataframe tbody td {
+    font-size: 1rem !important; color: var(--text-primary) !important;
+    padding: 10px 14px !important; border: 1px solid #e0e2e6 !important;
+  }
+  div[data-testid="stHorizontalBlock"] { align-items: stretch !important; }
+  div[data-testid="stHorizontalBlock"] > div { align-items: stretch !important; min-width: 0; overflow: visible !important; }
+  div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) { flex: 1 1 auto !important; min-width: 14rem !important; }
+  div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) > div { height: 100% !important; min-height: 7.5rem !important; }
+
+  /* Títulos de sección (solo tipografía; no afecta tablas) */
+  .section-title {
+    font-family: var(--font-head) !important;
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--acr-brown);
+    letter-spacing: -0.01em;
+    margin: 1.5rem 0 0.85rem 0;
+    line-height: 1.3;
+  }
+  hr { border: none; border-top: 1px solid #e2ddd6; opacity: 0.9; margin: 1rem 0; }
+
+  /* Menú de pestañas: diseño actual y claro */
+  .stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    background: #f2f4f6;
+    border-radius: 12px;
+    padding: 6px;
+    margin-bottom: 1rem;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .stTabs [data-baseweb="tab"] {
+    font-family: var(--font-head) !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    padding: 0.65rem 1.1rem !important;
+    border-radius: 8px !important;
+    color: var(--text-secondary) !important;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+  .stTabs [data-baseweb="tab"]:hover {
+    background: rgba(255,255,255,0.7) !important;
+    color: var(--acr-brown) !important;
+  }
+  .stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: var(--acr-white) !important;
+    color: var(--acr-red) !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  .stTabs [data-baseweb="tab-highlight"] {
+    background: var(--acr-red) !important;
+    border-radius: 8px;
+    height: 3px !important;
+  }
+</style>
+"""
+
+# Orden fijo de grupos (alineado al reporte Excel)
+ORDEN_GRUPOS = ['RBB', 'PLAZAS', 'PARADERO FR', 'PARADERO', 'EXPRÉS', 'OTROS']
+
+# Meses en español para toda la interfaz
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+# Días de la semana (lunes=0, domingo=6, según date.weekday())
+DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+@st.cache_resource
+def get_engine():
+    db_url = os.getenv("LOCAL_DB_URL", "sqlite:///./bi_local_data.db")
+    return create_engine(db_url)
+
+@st.cache_data
+def load_mapeo_sedes():
+    """Carga mapeo código normalizado -> (grupo, sede) desde sede_grupo_lookup."""
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text("SELECT store_id, sede, grupo FROM sede_grupo_lookup"), con=conn)
+        if df.empty:
+            return _mapeo_respaldo()
+        return dict(zip(
+            df["store_id"].astype(str).str.strip().str.upper().str.lstrip("0"),
+            list(zip(df["grupo"], df["sede"]))
+        ))
+    except Exception:
+        return _mapeo_respaldo()
+
+def _mapeo_respaldo():
+    return {
+        '2': ('RBB', 'ACR'), '3': ('RBB', 'ADC'), 'F08': ('RBB', 'CARTAGENA'), '201': ('RBB', 'MEDELLIN'),
+        '404': ('PLAZAS', 'GRAN ESTACIÓN'), '402': ('PLAZAS', 'HACIENDA'), '401': ('PLAZAS', 'RETIRO'), '405': ('PLAZAS', 'SANTAFÉ'),
+        'F09': ('PARADERO FR', 'BAZAAR'), 'F05': ('PARADERO FR', 'HYATT'), 'F04': ('PARADERO FR', 'PLAZA CLARO'),
+        '301': ('PARADERO', 'AEROPUERTO'), '304': ('PARADERO', 'ANDRES VIAJERO'), '305': ('PARADERO', 'RIONEGRO'),
+        '611': ('EXPRÉS', 'CAFAM'), '502': ('EXPRÉS', 'CALLE 93'), '612': ('EXPRÉS', 'CASA DE LOS ANDES'),
+        '4': ('EXPRÉS', 'EXPRÉS PARADERO'), '702': ('EXPRÉS', 'MULTIPARQUE'), '604': ('EXPRÉS', 'PALATINO'), '615': ('EXPRÉS', 'PEPE SIERRA')
+    }
+
+@st.cache_data(ttl=120)
+def load_ventas_operativas():
+    """
+    Ventas y transacciones por sede/día.
+    - Ventas: raw_ventas_2026 (Detalle); StoreID = Co.
+    - Transacciones: tabla Invoice (NEWACRventas) → Invoice.StoreID se relaciona con Store
+      para obtener Store.StoreID_External (Co) y nombre; se agrupa por (Co, día) y se cuenta
+      COUNT(DISTINCT InvoiceID). Ticket promedio = venta del día / transacciones (misma venta
+      que se muestra en cada campo).
+    """
+    engine = get_engine()
+    # Ventas: Co = raw_ventas_2026.StoreID (Detalle.Co). Transacciones: Invoice.StoreID es ID interno;
+    # hay que unir Invoice -> Store por StoreID y usar Store.StoreID_External (Co) para que coincida con ventas.
+    norm_co = "LTRIM(UPPER(TRIM(CAST(%s AS TEXT))), '0')"
+    query = f"""
+    WITH VentasDiarias AS (
+        SELECT 
+            {norm_co % 'StoreID'} AS codigo_sede_crudo,
+            DATE(Fecha) AS Fecha,
+            SUM(VlrBruto) AS VlrBruto,
+            SUM(VlrTotalDesc) AS VlrTotalDesc
+        FROM raw_ventas_2026
+        GROUP BY 1, 2
+    ),
+    -- Invoice.StoreID = ID interno; Store.StoreID_External = Co (mismo que Detalle.Co)
+    TransaccionesDiarias AS (
+        SELECT 
+            {norm_co % 's.StoreID_External'} AS codigo_sede_crudo,
+            DATE(i.BusinessDate) AS Fecha,
+            COUNT(DISTINCT i.InvoiceID) AS Cantidad_Transacciones
+        FROM raw_invoice_2026 i
+        INNER JOIN dim_store s ON TRIM(CAST(COALESCE(i.StoreID, '') AS TEXT)) = TRIM(CAST(COALESCE(s.StoreID, '') AS TEXT))
+        WHERE i.InvoiceID IS NOT NULL AND TRIM(CAST(COALESCE(s.StoreID_External, '') AS TEXT)) <> ''
+        GROUP BY 1, 2
+    )
+    SELECT 
+        COALESCE(s_main.Store_Name, 'DESCONOCIDA') AS Store_Name,
+        v.Fecha, v.codigo_sede_crudo, COALESCE(v.VlrBruto, 0) AS VlrBruto,
+        COALESCE(v.VlrTotalDesc, 0) AS VlrTotalDesc, COALESCE(t.Cantidad_Transacciones, 0) AS Cantidad_Transacciones
+    FROM VentasDiarias v
+    LEFT JOIN dim_store s_main ON v.codigo_sede_crudo = {norm_co % "COALESCE(s_main.StoreID_External, s_main.StoreID)"}
+    LEFT JOIN TransaccionesDiarias t ON v.codigo_sede_crudo = t.codigo_sede_crudo AND v.Fecha = t.Fecha
+    """
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), con=conn)
+        if not df.empty:
+            df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120)
+def load_financiero_excel():
+    """Presupuesto, histórico diarizado e Historico_Diario (2025). TTL 2 min para ver datos recién cargados (FTP/ETL)."""
+    engine = get_engine()
+    query = """
+    SELECT 
+        LTRIM(UPPER(TRIM(CAST(h.StoreID_External AS TEXT))), '0') AS codigo_sede_crudo,
+        COALESCE(s.Store_Name, h.Sede_Excel) AS Store_Name,
+        h.Agrupacion, h.Fecha, h.Escenario, h.Ventas, h.Transacciones
+    FROM hechos_excel_diario h
+    LEFT JOIN dim_store s ON LTRIM(UPPER(TRIM(CAST(h.StoreID_External AS TEXT))), '0') = LTRIM(UPPER(TRIM(CAST(s.StoreID_External AS TEXT))), '0')
+    """
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), con=conn)
+        if not df.empty:
+            df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+# --- FORMATOS ---
+def f_moneda(v): return f"${v:,.0f}".replace(",", ".") if pd.notna(v) else "$0"
+def f_entero(v): return f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "0"
+
+def _estilo_tabla_informe(df_show, col_var="VARIACIÓN"):
+    """Aplica estilo tipo reporte: filas de total por grupo (gris oscuro), Total general (amarillo), semáforos en col_var."""
+    def _estilo_fila(row):
+        rest = str(row.get("RESTAURANTE", ""))
+        if rest == "Total":
+            return ["background-color: #E8A317; color: #1a1510; font-weight: bold"] * len(row)
+        if rest.startswith("Total ") or rest.startswith("▪ Total "):
+            return ["background-color: #3d4554; color: #fff; font-weight: bold"] * len(row)
+        return [""] * len(row)
+
+    def _estilo_var(val):
+        if pd.isna(val): return ""
+        s = str(val)
+        if "▲" in s or ("+" in s and "%" in s):
+            return "background-color: #e6f4e6; color: #1a5f1a; font-weight: 600;"
+        if "▼" in s or ("-" in s and "%" in s):
+            return "background-color: #fde8e8; color: #a01c28; font-weight: 600;"
+        return ""
+
+    sty = df_show.style.apply(_estilo_fila, axis=1)
+    if col_var and col_var in df_show.columns:
+        sty = sty.applymap(_estilo_var, subset=[col_var])
+    return sty
+def f_delta(actual, anterior):
+    if pd.isna(anterior) or anterior == 0: return 0
+    return (actual / anterior) - 1
+
+def main():
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo-andres.png")
+    if os.path.isfile(logo_path):
+        with open(logo_path, "rb") as f:
+            logo_b64 = base64.b64encode(f.read()).decode()
+        logo_src = f"data:image/png;base64,{logo_b64}"
+    else:
+        logo_src = "https://seeklogo.com/images/A/andres-carne-de-res-logo-256225F950-seeklogo.com.png"
+    header_html = f"""
+    <div class="brand-header">
+      <img src="{logo_src}" alt="Andrés Carne de Res" class="brand-logo" />
+      <div>
+        <div class="brand-title">Informe de Ventas · Andrés Carne de Res</div>
+        <div class="brand-subtitle">Seguimiento diario y acumulado · Presupuesto, histórico y transacciones</div>
+      </div>
+    </div>
+    """
+    st.markdown(header_html, unsafe_allow_html=True)
+
+    MAPEO_SEDES = load_mapeo_sedes()
+    df_op = load_ventas_operativas()
+    df_fin = load_financiero_excel()
+
+    if df_op.empty:
+        st.error("No hay datos operativos. Ejecuta los ETLs.")
+        return
+
+    # --- FILTROS SIDEBAR ---
+    st.sidebar.header("Filtros")
+    u_f = df_op['Fecha'].max()
+    if not isinstance(u_f, date):
+        u_f = u_f.date() if hasattr(u_f, 'date') else date.today()
+
+    st.sidebar.subheader("Rango de fechas")
+    f_inicio = st.sidebar.date_input("Desde", u_f, key="f_desde")
+    f_fin = st.sidebar.date_input("Hasta", u_f, key="f_hasta")
+    if f_fin < f_inicio:
+        f_fin = f_inicio
+        st.sidebar.caption("Hasta no puede ser anterior a Desde. Se usó la misma fecha.")
+
+    f_sel = f_inicio  # para títulos y acumulado "hasta" usamos f_fin donde aplique
+
+    sedes_map = sorted(list(set([v[1] for v in MAPEO_SEDES.values()])))
+    s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map)
+    grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
+    g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map)
+    ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
+
+    st.sidebar.markdown("---")
+    alinear = st.sidebar.toggle("Lunes vs Lunes (comparativo 2025)", value=True)
+    f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
+    f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
+    if f_inicio and f_fin:
+        if f_inicio == f_fin:
+            d1 = f"{DIAS_SEMANA[f_inicio.weekday()]} {f_inicio.day} de {MESES_ES[f_inicio.month]} de {f_inicio.year}"
+            d2 = f"{DIAS_SEMANA[f_inicio_25.weekday()]} {f_inicio_25.day} de {MESES_ES[f_inicio_25.month]} de {f_inicio_25.year}"
+        else:
+            d1 = f"{DIAS_SEMANA[f_inicio.weekday()]} {f_inicio.day} al {DIAS_SEMANA[f_fin.weekday()]} {f_fin.day} de {MESES_ES[f_inicio.month]} de {f_inicio.year}"
+            d2 = f"{DIAS_SEMANA[f_inicio_25.weekday()]} {f_inicio_25.day} al {DIAS_SEMANA[f_fin_25.weekday()]} {f_fin_25.day} de {MESES_ES[f_inicio_25.month]} de {f_inicio_25.year}"
+        st.sidebar.caption(f"Comparando: **{d1}** / **{d2}**")
+
+    # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
+    df_r = df_op[(df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)].copy()
+    if not df_r.empty:
+        df_r['Venta_Real'] = df_r['VlrBruto'] - df_r['VlrTotalDesc'].abs()
+        df_r['Sede_Nom'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+        df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+        df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
+
+    df_h_raw = df_fin[(df_fin['Fecha'] >= f_inicio_25) & (df_fin['Fecha'] <= f_fin_25) & (df_fin['Escenario'].str.contains('Historico', na=False))].copy()
+    if not df_h_raw.empty:
+        df_h_raw['Sede_Nom'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+        df_h_raw['Grupo'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+        df_h_raw = df_h_raw[df_h_raw['Sede_Nom'].isin(s_filtro) & df_h_raw['Grupo'].isin(g_filtro)]
+        df_h = df_h_raw.groupby('codigo_sede_crudo', as_index=False).agg({
+            'Ventas': 'sum', 'Transacciones': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'
+        })
+    else:
+        df_h = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Transacciones', 'Sede_Nom', 'Grupo'])
+
+    df_p_raw = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')].copy()
+    if not df_p_raw.empty:
+        df_p_raw['Sede_Nom'] = df_p_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+        df_p_raw['Grupo'] = df_p_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+        df_p_raw = df_p_raw[df_p_raw['Sede_Nom'].isin(s_filtro) & df_p_raw['Grupo'].isin(g_filtro)]
+        df_p = df_p_raw.groupby('codigo_sede_crudo', as_index=False).agg({'Ventas': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'})
+    else:
+        df_p = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Sede_Nom', 'Grupo'])
+
+    # Acumulado mes (1 al día f_fin) para informe 4
+    if f_fin:
+        y, m = f_fin.year, f_fin.month
+        inicio_mes = date(y, m, 1)
+        mask_acum = (df_op['Fecha'] >= inicio_mes) & (df_op['Fecha'] <= f_fin)
+        df_op_acum = df_op[mask_acum].copy()
+        if not df_op_acum.empty:
+            df_op_acum['Venta_Real'] = df_op_acum['VlrBruto'] - df_op_acum['VlrTotalDesc'].abs()
+            df_op_acum['Sede_Nom'] = df_op_acum['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+            df_op_acum['Grupo'] = df_op_acum['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+            df_op_acum = df_op_acum[df_op_acum['Sede_Nom'].isin(s_filtro) & df_op_acum['Grupo'].isin(g_filtro)]
+            df_r_acum = df_op_acum.groupby('codigo_sede_crudo', as_index=False).agg({'Venta_Real': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'})
+        else:
+            df_r_acum = pd.DataFrame(columns=['codigo_sede_crudo', 'Venta_Real', 'Sede_Nom', 'Grupo'])
+        _, last_d = calendar.monthrange(y, m)
+        fin_mes = date(y, m, last_d)
+        mask_ppto_mes = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= fin_mes) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
+        mask_ppto_acum = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
+        df_p_mes = df_fin[mask_ppto_mes].copy()
+        df_p_acum_r = df_fin[mask_ppto_acum].copy()
+        if not df_p_mes.empty:
+            df_p_mes['Sede_Nom'] = df_p_mes['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+            df_p_mes['Grupo'] = df_p_mes['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+            df_p_mes = df_p_mes[df_p_mes['Sede_Nom'].isin(s_filtro) & df_p_mes['Grupo'].isin(g_filtro)]
+        if not df_p_acum_r.empty:
+            df_p_acum_r['Sede_Nom'] = df_p_acum_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
+            df_p_acum_r['Grupo'] = df_p_acum_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
+            df_p_acum_r = df_p_acum_r[df_p_acum_r['Sede_Nom'].isin(s_filtro) & df_p_acum_r['Grupo'].isin(g_filtro)]
+            df_p_acum = df_p_acum_r.groupby('codigo_sede_crudo', as_index=False).agg({'Ventas': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'})
+        else:
+            df_p_acum = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Sede_Nom', 'Grupo'])
+        ppto_mes_por_sede = df_p_mes.groupby('codigo_sede_crudo')['Ventas'].sum() if not df_p_mes.empty else pd.Series(dtype=float)
+    else:
+        df_r_acum = pd.DataFrame()
+        df_p_acum = pd.DataFrame()
+        ppto_mes_por_sede = pd.Series(dtype=float)
+
+    def _filas_por_grupo(df_sedes, col_venta='Venta_Real', col_ppto=None):
+        """Construye lista de filas: por grupo, sedes + Total grupo; luego Total general."""
+        filas = []
+        for grp in ORDEN_GRUPOS:
+            dg = df_sedes[df_sedes['Grupo'] == grp]
+            if dg.empty:
+                continue
+            for _, r in dg.sort_values('Sede_Nom').iterrows():
+                v = r[col_venta] if col_venta in r else 0
+                p = r[col_ppto] if col_ppto and col_ppto in r else 0
+                filas.append({'Grupo': grp, 'RESTAURANTE': r['Sede_Nom'], 'venta': v, 'ppto': p, 'es_total': False})
+            v_grp = dg[col_venta].sum() if col_venta in dg.columns else 0
+            p_grp = dg[col_ppto].sum() if col_ppto and col_ppto in dg.columns else 0
+            filas.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'venta': v_grp, 'ppto': p_grp, 'es_total': True})
+        if filas:
+            tot_v = sum(f['venta'] for f in filas if f['es_total'])
+            tot_p = sum(f['ppto'] for f in filas if f['es_total'])
+            filas.append({'Grupo': '', 'RESTAURANTE': 'Total', 'venta': tot_v, 'ppto': tot_p, 'es_total': True})
+        return filas
+
+    if f_inicio and f_fin:
+        titulo_fecha = (f"{DIAS_SEMANA[f_inicio.weekday()].upper()} {f_inicio.day} DE {MESES_ES[f_inicio.month].upper()} DE {f_inicio.year}" if f_inicio == f_fin
+            else f"{DIAS_SEMANA[f_inicio.weekday()].upper()} {f_inicio.day} AL {DIAS_SEMANA[f_fin.weekday()].upper()} {f_fin.day} DE {MESES_ES[f_inicio.month].upper()} DE {f_inicio.year}")
+    else:
+        titulo_fecha = ""
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+    "1. Ventas al público del día",
+    "2. Comparativo 2026 vs 2025",
+    "3. Presupuesto diario vs ventas al público",
+    "4. Presupuesto acumulado vs ventas al público",
+])
+
+    with tab1:
+        st.markdown(f'<p class="section-title">{titulo_fecha}</p>', unsafe_allow_html=True)
+        if df_r.empty:
+            st.info("No hay ventas al público para el día seleccionado.")
+        else:
+            agg_dict = {'Venta_Real': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'}
+            if 'Cantidad_Transacciones' in df_r.columns:
+                agg_dict['Cantidad_Transacciones'] = 'sum'
+            df1 = df_r.groupby("codigo_sede_crudo", as_index=False).agg(agg_dict)
+            if 'Cantidad_Transacciones' not in df1.columns:
+                df1['Cantidad_Transacciones'] = 0
+            filas1 = _filas_por_grupo(df1, col_venta='Venta_Real', col_ppto=None)
+            if filas1:
+                total_venta = filas1[-1]['venta']
+                col_met, col_tab = st.columns([2, 4])
+                with col_met:
+                    st.metric("Ventas al público", f_moneda(total_venta))
+                with col_tab:
+                    pass
+                rows_show = []
+                for f in filas1:
+                    if not f['es_total']:
+                        mask = df1['Sede_Nom'] == f['RESTAURANTE']
+                        tr = float(df1.loc[mask, 'Cantidad_Transacciones'].sum()) if mask.any() else 0
+                    elif f['RESTAURANTE'] == 'Total':
+                        tr = float(df1['Cantidad_Transacciones'].sum())
+                    else:
+                        tr = float(df1.loc[df1['Grupo'] == f['Grupo'], 'Cantidad_Transacciones'].sum())
+                    ticket = (f['venta'] / tr) if tr and tr > 0 else 0
+                    rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
+                    rows_show.append({
+                        'GRUPO': f['Grupo'],
+                        'RESTAURANTE': rest_label,
+                        'VENTAS AL PÚBLICO': f_moneda(f['venta']),
+                        'TRANSACCIONES': f_entero(tr),
+                        'TICKET PROMEDIO': f_moneda(ticket),
+                    })
+                df_show1 = pd.DataFrame(rows_show)
+                st.dataframe(_estilo_tabla_informe(df_show1, col_var=None), use_container_width=True, hide_index=True)
+                # Diagnóstico si transacciones siguen en 0
+                total_tr = df1['Cantidad_Transacciones'].sum()
+                if total_tr == 0:
+                    with st.expander("🔍 Diagnóstico: por qué no hay transacciones"):
+                        try:
+                            engine = get_engine()
+                            with engine.connect() as conn:
+                                n_inv = pd.read_sql(text("SELECT COUNT(*) AS n FROM raw_invoice_2026"), con=conn).iloc[0]['n']
+                                n_ventas = pd.read_sql(text("SELECT COUNT(*) AS n FROM raw_ventas_2026"), con=conn).iloc[0]['n']
+                                codigos_ventas = pd.read_sql(text("SELECT DISTINCT LTRIM(UPPER(TRIM(CAST(StoreID AS TEXT))), '0') AS co FROM raw_ventas_2026 LIMIT 20"), con=conn)
+                                codigos_inv = pd.read_sql(text("SELECT DISTINCT LTRIM(UPPER(TRIM(CAST(StoreID AS TEXT))), '0') AS co FROM raw_invoice_2026 LIMIT 20"), con=conn)
+                            st.caption("Filas en raw_invoice_2026: " + str(n_inv) + " | Filas en raw_ventas_2026: " + str(n_ventas))
+                            if n_inv == 0:
+                                st.warning("No hay registros en raw_invoice_2026. Ejecuta etl_maestros.py para cargar Invoice desde NEWACRVentas.")
+                            else:
+                                st.caption("Co en ventas (ej.): " + ", ".join(codigos_ventas['co'].astype(str).tolist()))
+                                st.caption("Co en Invoice (ej.): " + ", ".join(codigos_inv['co'].astype(str).tolist()))
+                                if not codigos_ventas.empty and not codigos_inv.empty:
+                                    comunes = set(codigos_ventas['co']) & set(codigos_inv['co'])
+                                    st.caption("Co que coinciden: " + (", ".join(comunes) if comunes else "ninguno (revisa que Invoice.StoreID sea el mismo Co que Detalle.Co)."))
+                        except Exception as e:
+                            st.caption("Error al diagnosticar: " + str(e))
+
+    with tab2:
+        st.markdown(f'<p class="section-title">Comparativo {titulo_fecha}</p>', unsafe_allow_html=True)
+        if df_r.empty:
+            st.info("No hay ventas al público 2026 para el día seleccionado.")
+        else:
+            codigos_r = set(df_r['codigo_sede_crudo'])
+            codigos_h = set(df_h['codigo_sede_crudo']) if not df_h.empty else set()
+            codigos = codigos_r | codigos_h
+            filas2 = []
+            for grp in ORDEN_GRUPOS:
+                for c in codigos:
+                    g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
+                    if g != grp or n not in s_filtro or g not in g_filtro:
+                        continue
+                    v26 = df_r[df_r['codigo_sede_crudo'] == c]['Venta_Real'].sum()
+                    v25 = df_h[df_h['codigo_sede_crudo'] == c]['Ventas'].sum() if not df_h.empty and 'Ventas' in df_h.columns else 0
+                    var = (v26 / v25 - 1) if v25 and v25 > 0 else None
+                    filas2.append({'Grupo': grp, 'RESTAURANTE': n, 'v26': v26, 'v25': v25, 'var': var, 'es_total': False})
+                dg = [f for f in filas2 if f['Grupo'] == grp and not f['es_total']]
+                if dg:
+                    s26 = sum(x['v26'] for x in dg)
+                    s25 = sum(x['v25'] for x in dg)
+                    var_grp = (s26 / s25 - 1) if s25 and s25 > 0 else None
+                    filas2.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'v26': s26, 'v25': s25, 'var': var_grp, 'es_total': True})
+            if filas2:
+                tot26 = sum(f['v26'] for f in filas2 if f['es_total'])
+                tot25 = sum(f['v25'] for f in filas2 if f['es_total'])
+                var_total = (tot26 / tot25 - 1) if tot25 and tot25 > 0 else None
+                filas2.append({'Grupo': '', 'RESTAURANTE': 'Total', 'v26': tot26, 'v25': tot25, 'var': var_total, 'es_total': True})
+                col_met, _ = st.columns([2, 4])
+                with col_met:
+                    st.metric("Var. vs año anterior", f"{var_total:+.0%}" if var_total is not None else "—")
+                rows_show = []
+                for f in filas2:
+                    rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
+                    var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
+                    rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'VENTA DIARIA 2026': f_moneda(f['v26']), 'VENTA DIARIA 2025': f_moneda(f['v25']), 'VARIACIÓN': var_str})
+                df_show2 = pd.DataFrame(rows_show)
+                st.dataframe(_estilo_tabla_informe(df_show2), use_container_width=True, hide_index=True)
+
+    with tab3:
+        st.markdown(f'<p class="section-title">Presupuesto diario vs ventas al público — {titulo_fecha}</p>', unsafe_allow_html=True)
+        codigos = set(df_r['codigo_sede_crudo']).union(set(df_p['codigo_sede_crudo']) if not df_p.empty else set())
+        filas3 = []
+        for grp in ORDEN_GRUPOS:
+            for c in codigos:
+                g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
+                if g != grp or n not in s_filtro or g not in g_filtro:
+                    continue
+                v = df_r[df_r['codigo_sede_crudo'] == c]['Venta_Real'].sum()
+                p = df_p[df_p['codigo_sede_crudo'] == c]['Ventas'].sum() if 'Ventas' in df_p.columns else 0
+                var = (v / p - 1) if p and p > 0 else None
+                filas3.append({'Grupo': grp, 'RESTAURANTE': n, 'venta': v, 'ppto': p, 'var': var, 'es_total': False})
+            dg = [f for f in filas3 if f['Grupo'] == grp and not f['es_total']]
+            if dg:
+                sv = sum(x['venta'] for x in dg)
+                sp = sum(x['ppto'] for x in dg)
+                var_grp = (sv / sp - 1) if sp and sp > 0 else None
+                filas3.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'venta': sv, 'ppto': sp, 'var': var_grp, 'es_total': True})
+        if filas3:
+            tot_v = sum(f['venta'] for f in filas3 if f['es_total'])
+            tot_p = sum(f['ppto'] for f in filas3 if f['es_total'])
+            var_tot = (tot_v / tot_p - 1) if tot_p and tot_p > 0 else None
+            filas3.append({'Grupo': '', 'RESTAURANTE': 'Total', 'venta': tot_v, 'ppto': tot_p, 'var': var_tot, 'es_total': True})
+
+            # KPIs horizontales: Presupuesto día + Venta día con % dentro de la tarjeta de venta
+            c1, c2, _ = st.columns([2, 2, 4])
+            with c1:
+                st.metric("Presupuesto día", f_moneda(tot_p))
+            with c2:
+                st.metric(
+                    "Ventas al público día",
+                    f_moneda(tot_v),
+                    delta=f"{var_tot:+.0%}" if var_tot is not None else "—",
+                )
+            rows_show = []
+            for f in filas3:
+                rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
+                var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
+                rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO DIARIO 2026': f_moneda(f['ppto']), 'VENTAS AL PÚBLICO 2026': f_moneda(f['venta']), 'VARIACIÓN': var_str})
+            df_show3 = pd.DataFrame(rows_show)
+            st.dataframe(_estilo_tabla_informe(df_show3), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos para presupuesto o ventas al público del día.")
+
+    with tab4:
+        st.markdown(f'<p class="section-title">Ppto acumulado vs ventas al público acumuladas — MES DE {MESES_ES[f_fin.month].upper() if f_fin else ""}</p>', unsafe_allow_html=True)
+        if df_r_acum.empty or not f_fin:
+            st.info("Sin datos acumulados para el mes.")
+        else:
+            codigos = set(df_r_acum['codigo_sede_crudo']).union(set(df_p_acum['codigo_sede_crudo']) if not df_p_acum.empty else set())
+            ppto_mes_total = ppto_mes_por_sede.sum() if hasattr(ppto_mes_por_sede, 'sum') else 0
+            filas4 = []
+            for grp in ORDEN_GRUPOS:
+                for c in codigos:
+                    g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
+                    if g != grp or n not in s_filtro or g not in g_filtro:
+                        continue
+                    vacum = df_r_acum[df_r_acum['codigo_sede_crudo'] == c]['Venta_Real'].sum()
+                    pacum = df_p_acum[df_p_acum['codigo_sede_crudo'] == c]['Ventas'].sum() if not df_p_acum.empty and 'Ventas' in df_p_acum.columns else 0
+                    pmes = ppto_mes_por_sede.get(c, 0) if hasattr(ppto_mes_por_sede, 'get') else (ppto_mes_por_sede[c] if c in ppto_mes_por_sede.index else 0)
+                    var = (vacum / pacum - 1) if pacum and pacum > 0 else None
+                    filas4.append({'Grupo': grp, 'RESTAURANTE': n, 'venta_acum': vacum, 'ppto_acum': pacum, 'ppto_mes': pmes, 'var': var, 'es_total': False})
+                dg = [f for f in filas4 if f['Grupo'] == grp and not f['es_total']]
+                if dg:
+                    va = sum(x['venta_acum'] for x in dg)
+                    pa = sum(x['ppto_acum'] for x in dg)
+                    var_grp = (va / pa - 1) if pa and pa > 0 else None
+                    filas4.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'venta_acum': va, 'ppto_acum': pa, 'ppto_mes': 0, 'var': var_grp, 'es_total': True})
+            if filas4:
+                tot_va = sum(f['venta_acum'] for f in filas4 if f['es_total'])
+                tot_pa = sum(f['ppto_acum'] for f in filas4 if f['es_total'])
+                ppto_mes_gral = df_p_mes['Ventas'].sum() if not df_p_mes.empty and 'Ventas' in df_p_mes.columns else 0
+                var_tot = (tot_va / tot_pa - 1) if tot_pa and tot_pa > 0 else None
+                filas4.append({'Grupo': '', 'RESTAURANTE': 'Total', 'venta_acum': tot_va, 'ppto_acum': tot_pa, 'ppto_mes': ppto_mes_gral, 'var': var_tot, 'es_total': True})
+                c1, c2, _ = st.columns([2, 2, 4])
+                with c1:
+                    st.metric("Presupuesto mes " + MESES_ES[f_fin.month], f_moneda(ppto_mes_gral))
+                with c2:
+                    st.metric(
+                        "Ventas al público acum. 1-" + str(f_fin.day),
+                        f_moneda(tot_va),
+                        delta=f"{var_tot:+.0%}" if var_tot is not None else "—",
+                    )
+                rows_show = []
+                for f in filas4:
+                    rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
+                    var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
+                    rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO 2026': f_moneda(f['ppto_acum']), 'VENTAS AL PÚBLICO ACUM.': f_moneda(f['venta_acum']), 'VARIACIÓN': var_str})
+                df_show4 = pd.DataFrame(rows_show)
+                st.dataframe(_estilo_tabla_informe(df_show4), use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin datos acumulados.")
+if __name__ == "__main__":
+    main()

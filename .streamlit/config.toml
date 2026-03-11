@@ -1,0 +1,16 @@
+# Tema y legibilidad (mejores prácticas WCAG + informes empresariales)
+[theme]
+base = "light"
+primaryColor = "#C41E3A"
+backgroundColor = "#FFFBF5"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#1a1a1a"
+font = "sans serif"
+
+[theme.sidebar]
+backgroundColor = "#f0f2f6"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a1a1a"
+
+[browser]
+gatherUsageStats = false

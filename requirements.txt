@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+jinja2
+python-multipart
+python-dotenv
+itsdangerous
+passlib[bcrypt]
+pyodbc
+pandas
+openpyxl
+pyyaml
+streamlit
