@@ -24,14 +24,14 @@ def _st_dataframe(df, **kwargs):
         st.dataframe(df, use_container_width=True)
 
 def _dataframe_serializable(df):
-    """Solo tipo interno: evita LargeUtf8 en Streamlit Cloud. No cambia valores ni aspecto."""
+    """Evita LargeUtf8 en frontend: solo columnas texto a tipo serializable. No cambia valores ni aspecto."""
     if df is None or df.empty:
         return df
     out = df.copy()
     for c in out.columns:
         try:
-            if pd.api.types.is_string_dtype(out[c]) and getattr(out[c].dtype, "name", "") != "object":
-                out[c] = out[c].astype(object)
+            if pd.api.types.is_string_dtype(out[c]) or getattr(out[c].dtype, "name", "") == "object":
+                out[c] = out[c].apply(lambda x: "" if pd.isna(x) else str(x))
         except Exception:
             pass
     return out
