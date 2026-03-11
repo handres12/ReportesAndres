@@ -23,6 +23,19 @@ def _st_dataframe(df, **kwargs):
     except (TypeError, AttributeError):
         st.dataframe(df, use_container_width=True)
 
+def _dataframe_serializable(df):
+    """Solo tipo interno: evita LargeUtf8 en Streamlit Cloud. No cambia valores ni aspecto."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in out.columns:
+        try:
+            if pd.api.types.is_string_dtype(out[c]) and getattr(out[c].dtype, "name", "") != "object":
+                out[c] = out[c].astype(object)
+        except Exception:
+            pass
+    return out
+
 # Configuración de página
 st.set_page_config(page_title="Dashboard BI - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -416,6 +429,7 @@ def f_entero(v): return f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "0"
 
 def _estilo_tabla_informe(df_show, col_var="VARIACIÓN"):
     """Aplica estilo tipo reporte: filas de total por grupo (gris oscuro), Total general (amarillo), semáforos en col_var."""
+    df_show = _dataframe_serializable(df_show)
     def _estilo_fila(row):
         rest = str(row.get("RESTAURANTE", ""))
         if rest == "Total":
