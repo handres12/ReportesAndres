@@ -626,7 +626,7 @@ def main():
                         'TICKET PROMEDIO': f_moneda(ticket),
                     })
                 df_show1 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show1, col_var=None), use_container_width=True, hide_index=True)
+                st.dataframe(_estilo_tabla_informe(df_show1, col_var=None), use_container_width=True)
                 # Diagnóstico si transacciones siguen en 0
                 total_tr = df1['Cantidad_Transacciones'].sum()
                 if total_tr == 0:
@@ -688,7 +688,7 @@ def main():
                     var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                     rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'VENTA DIARIA 2026': f_moneda(f['v26']), 'VENTA DIARIA 2025': f_moneda(f['v25']), 'VARIACIÓN': var_str})
                 df_show2 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show2), use_container_width=True, hide_index=True)
+                st.dataframe(_estilo_tabla_informe(df_show2), use_container_width=True)
 
     with tab3:
         st.markdown(f'<p class="section-title">Presupuesto diario vs ventas al público — {titulo_fecha}</p>', unsafe_allow_html=True)
@@ -731,7 +731,7 @@ def main():
                 var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                 rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO DIARIO 2026': f_moneda(f['ppto']), 'VENTAS AL PÚBLICO 2026': f_moneda(f['venta']), 'VARIACIÓN': var_str})
             df_show3 = pd.DataFrame(rows_show)
-            st.dataframe(_estilo_tabla_informe(df_show3), use_container_width=True, hide_index=True)
+            st.dataframe(_estilo_tabla_informe(df_show3), use_container_width=True)
         else:
             st.info("Sin datos para presupuesto o ventas al público del día.")
 
@@ -780,7 +780,7 @@ def main():
                     var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                     rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO 2026': f_moneda(f['ppto_acum']), 'VENTAS AL PÚBLICO ACUM.': f_moneda(f['venta_acum']), 'VARIACIÓN': var_str})
                 df_show4 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show4), use_container_width=True, hide_index=True)
+                st.dataframe(_estilo_tabla_informe(df_show4), use_container_width=True)
             else:
                 st.info("Sin datos acumulados.")
 if __name__ == "__main__":
