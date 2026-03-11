@@ -10,6 +10,18 @@ import calendar
 # Cargar variables de entorno
 load_dotenv()
 
+# Compatibilidad: en Streamlit 1.19 (ej. Cloud) no existen toggle ni hide_index; en versiones nuevas sí
+def _sidebar_toggle(label, value=True):
+    if hasattr(st.sidebar, "toggle"):
+        return st.sidebar.toggle(label, value=value)
+    return st.sidebar.checkbox(label, value=value)
+
+def _st_dataframe(df, **kwargs):
+    try:
+        st.dataframe(df, use_container_width=True, **kwargs)
+    except TypeError:
+        st.dataframe(df, use_container_width=True)
+
 # Configuración de página
 st.set_page_config(page_title="Dashboard BI - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -478,7 +490,7 @@ def main():
     ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
 
     st.sidebar.markdown("---")
-    alinear = st.sidebar.checkbox("Lunes vs Lunes (comparativo 2025)", value=True)
+    alinear = _sidebar_toggle("Lunes vs Lunes (comparativo 2025)", value=True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
     if f_inicio and f_fin:
@@ -626,7 +638,7 @@ def main():
                         'TICKET PROMEDIO': f_moneda(ticket),
                     })
                 df_show1 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show1, col_var=None), use_container_width=True)
+                _st_dataframe(_estilo_tabla_informe(df_show1, col_var=None), hide_index=True)
                 # Diagnóstico si transacciones siguen en 0
                 total_tr = df1['Cantidad_Transacciones'].sum()
                 if total_tr == 0:
@@ -688,7 +700,7 @@ def main():
                     var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                     rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'VENTA DIARIA 2026': f_moneda(f['v26']), 'VENTA DIARIA 2025': f_moneda(f['v25']), 'VARIACIÓN': var_str})
                 df_show2 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show2), use_container_width=True)
+                _st_dataframe(_estilo_tabla_informe(df_show2), hide_index=True)
 
     with tab3:
         st.markdown(f'<p class="section-title">Presupuesto diario vs ventas al público — {titulo_fecha}</p>', unsafe_allow_html=True)
@@ -731,7 +743,7 @@ def main():
                 var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                 rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO DIARIO 2026': f_moneda(f['ppto']), 'VENTAS AL PÚBLICO 2026': f_moneda(f['venta']), 'VARIACIÓN': var_str})
             df_show3 = pd.DataFrame(rows_show)
-            st.dataframe(_estilo_tabla_informe(df_show3), use_container_width=True)
+            _st_dataframe(_estilo_tabla_informe(df_show3), hide_index=True)
         else:
             st.info("Sin datos para presupuesto o ventas al público del día.")
 
@@ -780,7 +792,7 @@ def main():
                     var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
                     rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO 2026': f_moneda(f['ppto_acum']), 'VENTAS AL PÚBLICO ACUM.': f_moneda(f['venta_acum']), 'VARIACIÓN': var_str})
                 df_show4 = pd.DataFrame(rows_show)
-                st.dataframe(_estilo_tabla_informe(df_show4), use_container_width=True)
+                _st_dataframe(_estilo_tabla_informe(df_show4), hide_index=True)
             else:
                 st.info("Sin datos acumulados.")
 if __name__ == "__main__":
