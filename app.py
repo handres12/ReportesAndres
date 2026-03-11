@@ -20,7 +20,7 @@ def _sidebar_toggle(label, value=True):
 def _st_dataframe(df, **kwargs):
     try:
         st.dataframe(df, use_container_width=True, **kwargs)
-    except TypeError:
+    except (TypeError, AttributeError):
         st.dataframe(df, use_container_width=True)
 
 # Configuración de página
@@ -435,7 +435,11 @@ def _estilo_tabla_informe(df_show, col_var="VARIACIÓN"):
 
     sty = df_show.style.apply(_estilo_fila, axis=1)
     if col_var and col_var in df_show.columns:
-        sty = sty.applymap(_estilo_var, subset=[col_var])
+        # pandas 2.2+ usa .map; versiones anteriores .applymap
+        if hasattr(sty, "map"):
+            sty = sty.map(_estilo_var, subset=[col_var])
+        else:
+            sty = sty.applymap(_estilo_var, subset=[col_var])
     return sty
 def f_delta(actual, anterior):
     if pd.isna(anterior) or anterior == 0: return 0
