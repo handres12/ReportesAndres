@@ -287,8 +287,16 @@ DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", 
 
 @st.cache_resource
 def get_engine():
-    db_url = os.getenv("LOCAL_DB_URL", "sqlite:///./bi_local_data.db")
-    return create_engine(db_url)
+    db_url = os.getenv("LOCAL_DB_URL")
+    if not db_url:
+        # En la nube (Streamlit Cloud) la app corre desde la raíz del repo; DB junto a app.py
+        base = os.path.dirname(os.path.abspath(__file__))
+        db_path = os.path.join(base, "bi_local_data.db")
+        db_url = f"sqlite:///{db_path}"
+    kwargs = {}
+    if "sqlite" in db_url:
+        kwargs["connect_args"] = {"check_same_thread": False}
+    return create_engine(db_url, **kwargs)
 
 @st.cache_data
 def load_mapeo_sedes():
