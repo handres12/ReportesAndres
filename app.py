@@ -463,6 +463,8 @@ def f_delta(actual, anterior):
 
 def _auth_microsoft_configured():
     """True si está configurado el login con Microsoft (Outlook/Entra) en secrets."""
+    if st.session_state.get("_skip_microsoft_auth"):
+        return False
     try:
         if not hasattr(st, "user") or not hasattr(st, "login"):
             return False
@@ -479,7 +481,14 @@ def _pagina_login_microsoft():
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     st.markdown("## Acceso al informe de ventas")
     st.markdown("Inicia sesión con tu **cuenta de Outlook / Microsoft 365** (correo corporativo).")
-    st.button("Iniciar sesión con Microsoft", type="primary", on_click=st.login)
+    try:
+        if st.button("Iniciar sesión con Microsoft", type="primary", on_click=st.login):
+            pass
+    except Exception:
+        st.warning("En este entorno el login con Microsoft no está disponible. Usa usuario y contraseña.")
+        if st.button("Ir a inicio de sesión con usuario"):
+            st.session_state["_skip_microsoft_auth"] = True
+            st.rerun()
 
 def _pagina_login_registro():
     """Login/registro con usuario y contraseña (cuando no hay auth Microsoft)."""
@@ -517,22 +526,34 @@ def _pagina_login_registro():
 
 def _usuario_actual():
     """Nombre a mostrar: Microsoft (st.user) o usuario de registro."""
-    if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
-        return getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Usuario"
+    try:
+        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+            return getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Usuario"
+    except Exception:
+        pass
     return st.session_state.get("user")
 
 def _esta_logueado():
-    return bool(
-        st.session_state.get("user")
-        or (_auth_microsoft_configured() and getattr(st.user, "is_logged_in", False))
-    )
+    """True si hay sesión (Microsoft o usuario/contraseña). En la nube, si falla st.user, usa solo session."""
+    try:
+        if st.session_state.get("user"):
+            return True
+        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+            return True
+    except Exception:
+        pass
+    return False
 
 def main():
-    if not _esta_logueado():
-        if _auth_microsoft_configured():
-            _pagina_login_microsoft()
-        else:
-            _pagina_login_registro()
+    try:
+        if not _esta_logueado():
+            if _auth_microsoft_configured():
+                _pagina_login_microsoft()
+            else:
+                _pagina_login_registro()
+            return
+    except Exception:
+        _pagina_login_registro()
         return
 
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
