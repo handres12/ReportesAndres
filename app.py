@@ -55,13 +55,13 @@ def _oauth_cloud_handle_callback():
         if not token_endpoint:
             st.session_state["_oauth_error"] = "No token_endpoint en metadata"
             return False
+        state = st.query_params.get("state")
         client = OAuth2Session(
             cfg["client_id"], cfg["client_secret"],
             redirect_uri=cfg["redirect_uri_root"],
             scope="openid profile email",
+            state=state,
         )
-        if "state" in st.query_params:
-            client.session["state"] = st.query_params["state"]
         q = st.query_params
         # La URL de callback debe coincidir exactamente con la registrada en Azure (con o sin barra final)
         base = cfg["redirect_uri_root"].rstrip("/")
