@@ -8,10 +8,8 @@ from dotenv import load_dotenv
 from datetime import date, timedelta
 import calendar
 
-try:
-    import auth
-except Exception:
-    auth = None  # En la nube puede fallar si falta passlib; la app sigue y mostramos mensaje
+# auth se importa solo cuando hace falta (login en local), para no fallar en la nube
+auth = None
 
 # Cargar variables de entorno
 load_dotenv()
@@ -496,11 +494,17 @@ def _pagina_login_microsoft():
 
 def _pagina_login_registro():
     """Login/registro con usuario y contraseña (cuando no hay auth Microsoft)."""
+    global auth
+    if auth is None:
+        try:
+            import auth as _auth
+            auth = _auth
+        except Exception:
+            st.markdown(BRAND_CSS, unsafe_allow_html=True)
+            st.error("Módulo de autenticación no disponible en este entorno. Contacte al administrador.")
+            return
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     st.markdown("## Acceso al informe de ventas")
-    if auth is None:
-        st.error("Módulo de autenticación no disponible en este entorno. Contacte al administrador.")
-        return
     try:
         engine = get_engine()
         auth.init_auth_table(engine)
@@ -601,9 +605,17 @@ def _main_impl():
     """
     st.markdown(header_html, unsafe_allow_html=True)
 
-    MAPEO_SEDES = load_mapeo_sedes()
-    df_op = load_ventas_operativas()
-    df_fin = load_financiero_excel()
+    # En la nube puede no haber base de datos; si falla, mostrar mensaje y no romper (evitar 400)
+    try:
+        MAPEO_SEDES = load_mapeo_sedes()
+        df_op = load_ventas_operativas()
+        df_fin = load_financiero_excel()
+    except Exception as e:
+        if _en_streamlit_cloud():
+            st.info("Informe disponible en la versión local. En la nube no hay base de datos configurada.")
+            st.caption("Para ver datos aquí, sube bi_local_data.db o configura una fuente en la nube.")
+            return
+        raise
 
     if df_op.empty:
         st.error("No hay datos operativos. Ejecuta los ETLs.")
