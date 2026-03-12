@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from datetime import date, timedelta
 import calendar
 
+import auth
+
 # Cargar variables de entorno
 load_dotenv()
 
@@ -459,7 +461,80 @@ def f_delta(actual, anterior):
     if pd.isna(anterior) or anterior == 0: return 0
     return (actual / anterior) - 1
 
+def _auth_microsoft_configured():
+    """True si está configurado el login con Microsoft (Outlook/Entra) en secrets."""
+    try:
+        if not hasattr(st, "user") or not hasattr(st, "login"):
+            return False
+        sec = getattr(st, "secrets", None)
+        if sec is None or not hasattr(sec, "get"):
+            return False
+        a = sec.get("auth") or {}
+        return bool(a.get("client_id") and a.get("client_secret"))
+    except Exception:
+        return False
+
+def _pagina_login_microsoft():
+    """Pantalla de login solo con Microsoft (cuando [auth] está configurado)."""
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    st.markdown("## Acceso al informe de ventas")
+    st.markdown("Inicia sesión con tu **cuenta de Outlook / Microsoft 365** (correo corporativo).")
+    st.button("Iniciar sesión con Microsoft", type="primary", on_click=st.login)
+
+def _pagina_login_registro():
+    """Login/registro con usuario y contraseña (cuando no hay auth Microsoft)."""
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    st.markdown("## Acceso al informe de ventas")
+    tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
+    engine = get_engine()
+    auth.init_auth_table(engine)
+
+    with tab1:
+        with st.form("login_form"):
+            u = st.text_input("Usuario", key="login_user")
+            p = st.text_input("Contraseña", type="password", key="login_pass")
+            if st.form_submit_button("Entrar"):
+                if auth.verify(engine, u, p):
+                    st.session_state["user"] = u
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+
+    with tab2:
+        with st.form("register_form"):
+            ru = st.text_input("Usuario", key="reg_user")
+            rp = st.text_input("Contraseña", type="password", key="reg_pass")
+            rp2 = st.text_input("Repetir contraseña", type="password", key="reg_pass2")
+            if st.form_submit_button("Registrarse"):
+                if not ru or not rp:
+                    st.error("Usuario y contraseña son obligatorios.")
+                elif rp != rp2:
+                    st.error("Las contraseñas no coinciden.")
+                elif auth.register(engine, ru, rp):
+                    st.success("Cuenta creada. Inicia sesión en la pestaña «Iniciar sesión».")
+                else:
+                    st.error("El usuario ya existe o no se pudo crear la cuenta.")
+
+def _usuario_actual():
+    """Nombre a mostrar: Microsoft (st.user) o usuario de registro."""
+    if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+        return getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Usuario"
+    return st.session_state.get("user")
+
+def _esta_logueado():
+    return bool(
+        st.session_state.get("user")
+        or (_auth_microsoft_configured() and getattr(st.user, "is_logged_in", False))
+    )
+
 def main():
+    if not _esta_logueado():
+        if _auth_microsoft_configured():
+            _pagina_login_microsoft()
+        else:
+            _pagina_login_registro()
+        return
+
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo-andres.png")
     if os.path.isfile(logo_path):
@@ -487,7 +562,15 @@ def main():
         st.error("No hay datos operativos. Ejecuta los ETLs.")
         return
 
-    # --- FILTROS SIDEBAR ---
+    # --- SIDEBAR: usuario y filtros ---
+    st.sidebar.caption(f"Conectado como **{_usuario_actual() or '—'}**")
+    if st.sidebar.button("Cerrar sesión"):
+        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+            st.logout()
+        if st.session_state.get("user"):
+            del st.session_state["user"]
+        st.rerun()
+    st.sidebar.markdown("---")
     st.sidebar.header("Filtros")
     u_f = df_op['Fecha'].max()
     if not isinstance(u_f, date):
