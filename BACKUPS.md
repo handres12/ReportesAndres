@@ -5,10 +5,11 @@
 - **`app.py`** — Versión actual para **publicación** (Streamlit Cloud). Incluye:
   - Transacciones correctas (Invoice → Store → StoreID_External = Co)
   - "Ventas al público" en la UI
-  - Compatibilidad con Streamlit 1.19 (toggle, dataframe, estilo tablas)
+  - Login con Microsoft en **local** (st.login) y en **web** (flujo OAuth con Authlib, redirect a URL raíz)
+  - Compatibilidad Streamlit (toggle, dataframe con width="stretch", estilo tablas)
   - Sin bloque de diagnóstico
 
-- **`app_backup_actual.py`** — Copia de seguridad del `app.py` actual (mismo contenido que el de arriba). Úsalo si quieres volver a este estado después de probar cambios.
+- **`app_backup_actual.py`** — Copia de seguridad del `app.py` actual. Úsalo si quieres volver a este estado después de probar cambios. **Última copia:** marzo 2026 (login Microsoft local + web funcionando).
 
 ## Publicación
 

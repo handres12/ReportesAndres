@@ -1,14 +1,120 @@
+# Dashboard BI - Andrés Carne de Res (redeploy 2025-03)
 import streamlit as st
 import pandas as pd
 import os
 import base64
+import traceback
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from datetime import date, timedelta
 import calendar
 
+# auth se importa solo cuando hace falta (login en local), para no fallar en la nube
+auth = None
+
 # Cargar variables de entorno
 load_dotenv()
+
+def _en_streamlit_cloud():
+    """True si la app corre en Streamlit Cloud (no en tu PC)."""
+    return "/mount/src" in os.path.abspath(__file__)
+
+# Flujo OAuth con Authlib para la nube (evita bug de st.login + oauth2callback en Cloud)
+def _oauth_cloud_get_config():
+    """En la nube: devuelve dict con client_id, client_secret, server_metadata_url, redirect_uri_root (URL raíz para callback)."""
+    if not _en_streamlit_cloud():
+        return None
+    try:
+        sec = getattr(st, "secrets", None)
+        if not sec:
+            return None
+        a = sec.get("auth") or {}
+        cid = a.get("client_id") or (a.get("microsoft") or {}).get("client_id")
+        csec = a.get("client_secret") or (a.get("microsoft") or {}).get("client_secret")
+        meta = a.get("server_metadata_url") or (a.get("microsoft") or {}).get("server_metadata_url")
+        ru = (a.get("redirect_uri") or "").strip()
+        if not (cid and csec and meta and ru):
+            return None
+        # redirect_uri_root = URL raíz (sin /oauth2callback) para que Microsoft redirija ahí
+        root = ru.replace("/oauth2callback", "").rstrip("/") + "/"
+        return {"client_id": cid, "client_secret": csec, "server_metadata_url": meta, "redirect_uri_root": root}
+    except Exception:
+        return None
+
+def _oauth_cloud_handle_callback():
+    """Si hay ?code= en la URL (vuelta de Microsoft), intercambia por token y guarda usuario. Devuelve True si hizo login."""
+    cfg = _oauth_cloud_get_config()
+    if not cfg or "code" not in st.query_params:
+        return False
+    if "_oauth_error" in st.session_state:
+        del st.session_state["_oauth_error"]
+    try:
+        import requests
+        from authlib.integrations.requests_client import OAuth2Session
+        meta = requests.get(cfg["server_metadata_url"], timeout=10).json()
+        token_endpoint = meta.get("token_endpoint")
+        userinfo_endpoint = meta.get("userinfo_endpoint")
+        if not token_endpoint:
+            st.session_state["_oauth_error"] = "No token_endpoint en metadata"
+            return False
+        state = st.query_params.get("state")
+        client = OAuth2Session(
+            cfg["client_id"], cfg["client_secret"],
+            redirect_uri=cfg["redirect_uri_root"],
+            scope="openid profile email",
+            state=state,
+        )
+        q = st.query_params
+        # La URL de callback debe coincidir exactamente con la registrada en Azure (con o sin barra final)
+        base = cfg["redirect_uri_root"].rstrip("/")
+        auth_response = base + "?" + "&".join(f"{k}={v}" for k, v in q.items())
+        token = client.fetch_token(token_endpoint, authorization_response=auth_response)
+        user_info = {}
+        if userinfo_endpoint:
+            resp = client.get(userinfo_endpoint)
+            if resp.status_code == 200:
+                user_info = resp.json()
+        st.session_state["_oauth_user"] = {
+            "name": user_info.get("name") or user_info.get("preferred_username") or "",
+            "email": user_info.get("email") or user_info.get("preferred_username") or "",
+        }
+        if "_oauth_error" in st.session_state:
+            del st.session_state["_oauth_error"]
+        st.rerun()
+        return True
+    except Exception as e:
+        err = str(e)
+        if "invalid_grant" in err or "AADSTS70008" in err or "expired" in err.lower():
+            st.session_state["_oauth_error"] = "El código de autorización expiró o ya se usó. Haz clic de nuevo en «Iniciar sesión con Microsoft» (el código solo vale unos minutos)."
+        else:
+            st.session_state["_oauth_error"] = err
+        return False
+
+def _oauth_cloud_auth_url():
+    """URL a la que enviar al usuario para iniciar sesión con Microsoft (solo en la nube)."""
+    cfg = _oauth_cloud_get_config()
+    if not cfg:
+        return None
+    try:
+        import requests
+        from authlib.integrations.requests_client import OAuth2Session
+        meta = requests.get(cfg["server_metadata_url"], timeout=10).json()
+        auth_endpoint = meta.get("authorization_endpoint")
+        if not auth_endpoint:
+            return None
+        client = OAuth2Session(
+            cfg["client_id"], cfg["client_secret"],
+            redirect_uri=cfg["redirect_uri_root"],
+            scope="openid profile email",
+        )
+        url, _ = client.create_authorization_url(auth_endpoint, prompt="select_account")
+        return url
+    except Exception:
+        return None
+
+def _en_streamlit_cloud():
+    """True si la app corre en Streamlit Cloud (no en tu PC)."""
+    return "/mount/src" in os.path.abspath(__file__)
 
 # Compatibilidad: en Streamlit 1.19 (Cloud) toggle existe pero falla al llamarlo; en versiones nuevas funciona
 def _sidebar_toggle(label, value=True):
@@ -17,11 +123,26 @@ def _sidebar_toggle(label, value=True):
     except Exception:
         return st.sidebar.checkbox(label, value=value)
 
-def _st_dataframe(df, **kwargs):
+def _st_dataframe(df, hide_index=False, **kwargs):
+    # width="stretch" reemplaza use_container_width=True (deprecado 2025)
+    opts = {k: v for k, v in kwargs.items() if k != "use_container_width"}
     try:
-        st.dataframe(df, use_container_width=True, **kwargs)
+        st.dataframe(df, width="stretch", hide_index=hide_index, **opts)
     except (TypeError, AttributeError):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch", hide_index=hide_index)
+
+def _dataframe_serializable(df):
+    """Evita LargeUtf8 en frontend: solo columnas texto a tipo serializable. No cambia valores ni aspecto."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in out.columns:
+        try:
+            if pd.api.types.is_string_dtype(out[c]) or getattr(out[c].dtype, "name", "") == "object":
+                out[c] = out[c].apply(lambda x: "" if pd.isna(x) else str(x))
+        except Exception:
+            pass
+    return out
 
 # Configuración de página
 st.set_page_config(page_title="Dashboard BI - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
@@ -416,6 +537,7 @@ def f_entero(v): return f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "0"
 
 def _estilo_tabla_informe(df_show, col_var="VARIACIÓN"):
     """Aplica estilo tipo reporte: filas de total por grupo (gris oscuro), Total general (amarillo), semáforos en col_var."""
+    df_show = _dataframe_serializable(df_show)
     def _estilo_fila(row):
         rest = str(row.get("RESTAURANTE", ""))
         if rest == "Total":
@@ -445,7 +567,195 @@ def f_delta(actual, anterior):
     if pd.isna(anterior) or anterior == 0: return 0
     return (actual / anterior) - 1
 
+def _auth_microsoft_configured():
+    """True si está configurado el login con Microsoft (Outlook/Entra) en secrets."""
+    if st.session_state.get("_skip_microsoft_auth"):
+        return False
+    try:
+        if not hasattr(st, "user") or not hasattr(st, "login"):
+            return False
+        sec = getattr(st, "secrets", None)
+        if sec is None or not hasattr(sec, "get"):
+            return False
+        a = sec.get("auth") or {}
+        # Todo en [auth] (proveedor por defecto)
+        if a.get("client_id") and a.get("client_secret"):
+            return True
+        # Formato nombrado [auth.microsoft]
+        m = (a.get("microsoft") or {}) if isinstance(a, dict) else {}
+        return bool(m.get("client_id") and m.get("client_secret"))
+    except Exception:
+        return False
+
+def _auth_provider_name():
+    """Si usas [auth.microsoft], devuelve 'microsoft'; si todo en [auth], None."""
+    try:
+        sec = getattr(st, "secrets", None)
+        if not sec: return None
+        a = sec.get("auth") or {}
+        if a.get("client_id") and a.get("client_secret"):
+            return None
+        m = (a.get("microsoft") or {}) if isinstance(a, dict) else {}
+        if m.get("client_id") and m.get("client_secret"):
+            return "microsoft"
+        return None
+    except Exception:
+        return None
+
+def _pagina_login_microsoft():
+    """Pantalla de login solo con Microsoft (cuando [auth] está configurado). En la nube usa flujo Authlib (sin oauth2callback)."""
+    # En la nube: si volvemos de Microsoft con ?code=, intercambiar por token y redirigir
+    if _oauth_cloud_get_config() and _oauth_cloud_handle_callback():
+        return
+
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    st.markdown("## Acceso al informe de ventas")
+    st.markdown("Inicia sesión con tu **cuenta de Outlook / Microsoft 365** (correo corporativo).")
+
+    # En la nube: usar enlace a URL de Authlib (evita bug de st.login + oauth2callback)
+    auth_url_cloud = _oauth_cloud_auth_url() if _oauth_cloud_get_config() else None
+    if auth_url_cloud:
+        if st.session_state.get("_oauth_error"):
+            st.error(st.session_state["_oauth_error"])
+            if "redirect_uri" in st.session_state.get("_oauth_error", ""):
+                st.caption("Revisa que en Azure esté exactamente: https://reportesandresbi.streamlit.app/ (con barra final).")
+        st.markdown("Haz clic en el botón para ir a Microsoft y autorizar el acceso. **No esperes mucho** después de autorizar: vuelve a la pestaña en seguida.")
+        st.link_button("Iniciar sesión con Microsoft", url=auth_url_cloud, type="primary")
+        cfg = _oauth_cloud_get_config()
+        if cfg:
+            st.caption("En la nube se usa un flujo alternativo. En Azure debe estar la URI: " + cfg.get("redirect_uri_root", ""))
+    else:
+        # Local: st.login()
+        with st.expander("¿No funciona el login? Ver diagnóstico"):
+            has_user = hasattr(st, "user")
+            has_login = hasattr(st, "login")
+            sec = getattr(st, "secrets", None)
+            auth = (sec.get("auth") or {}) if sec else {}
+            ms = (auth.get("microsoft") or {}) if isinstance(auth, dict) else {}
+            has_cid = bool(auth.get("client_id") or ms.get("client_id"))
+            has_csec = bool(auth.get("client_secret") or ms.get("client_secret"))
+            ru = (auth.get("redirect_uri") or "")
+            redirect_ok = ru.rstrip("/").endswith("oauth2callback") or "/oauth2callback" in ru
+            st.caption("st.user: " + ("sí" if has_user else "no") + " · st.login: " + ("sí" if has_login else "no"))
+            st.caption("client_id en secrets: " + ("sí" if has_cid else "no") + " · client_secret: " + ("sí" if has_csec else "no"))
+            st.caption("redirect_uri termina en oauth2callback: " + ("sí" if redirect_ok else "no — debe ser .../oauth2callback"))
+            if not redirect_ok and ru:
+                st.code(ru, language=None)
+            provider = _auth_provider_name()
+            st.caption("Proveedor: " + (provider or "por defecto [auth]"))
+
+        def _do_login():
+            if _auth_provider_name() == "microsoft":
+                st.login("microsoft")
+            else:
+                st.login()
+
+        try:
+            if st.button("Iniciar sesión con Microsoft", type="primary", on_click=_do_login):
+                pass
+        except Exception as e:
+            st.warning("En este entorno el login con Microsoft no está disponible. Usa usuario y contraseña.")
+            st.code(str(e), language=None)
+            if st.button("Ir a inicio de sesión con usuario"):
+                st.session_state["_skip_microsoft_auth"] = True
+                st.rerun()
+
+def _pagina_login_registro():
+    """Login/registro con usuario y contraseña (cuando no hay auth Microsoft)."""
+    global auth
+    if auth is None:
+        try:
+            import auth as _auth
+            auth = _auth
+        except Exception:
+            st.markdown(BRAND_CSS, unsafe_allow_html=True)
+            st.error("Módulo de autenticación no disponible en este entorno. Contacte al administrador.")
+            return
+    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    st.markdown("## Acceso al informe de ventas")
+    try:
+        engine = get_engine()
+        auth.init_auth_table(engine)
+    except Exception as e:
+        st.error("No se pudo conectar a la base de datos.")
+        st.code(str(e))
+        return
+    tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
+
+    with tab1:
+        with st.form("login_form"):
+            u = st.text_input("Usuario", key="login_user")
+            p = st.text_input("Contraseña", type="password", key="login_pass")
+            if st.form_submit_button("Entrar"):
+                if auth.verify(engine, u, p):
+                    st.session_state["user"] = u
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+
+    with tab2:
+        with st.form("register_form"):
+            ru = st.text_input("Usuario", key="reg_user")
+            rp = st.text_input("Contraseña", type="password", key="reg_pass")
+            rp2 = st.text_input("Repetir contraseña", type="password", key="reg_pass2")
+            if st.form_submit_button("Registrarse"):
+                if not ru or not rp:
+                    st.error("Usuario y contraseña son obligatorios.")
+                elif rp != rp2:
+                    st.error("Las contraseñas no coinciden.")
+                elif auth.register(engine, ru, rp):
+                    st.success("Cuenta creada. Inicia sesión en la pestaña «Iniciar sesión».")
+                else:
+                    st.error("El usuario ya existe o no se pudo crear la cuenta.")
+
+def _usuario_actual():
+    """Nombre a mostrar: Microsoft (st.user), OAuth nube (_oauth_user) o usuario de registro."""
+    if _en_streamlit_cloud() and st.session_state.get("_oauth_user"):
+        u = st.session_state["_oauth_user"]
+        return u.get("name") or u.get("email") or "Usuario"
+    try:
+        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+            return getattr(st.user, "name", None) or getattr(st.user, "email", None) or "Usuario"
+    except Exception:
+        pass
+    return st.session_state.get("user")
+
+def _esta_logueado():
+    """True si hay sesión (Microsoft, OAuth nube _oauth_user, o usuario/contraseña)."""
+    if st.session_state.get("_oauth_user"):
+        return True
+    try:
+        if st.session_state.get("user"):
+            return True
+        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+            return True
+    except Exception:
+        pass
+    return False
+
 def main():
+    try:
+        _main_impl()
+    except Exception as e:
+        st.error("Error al cargar la aplicación. Copie el mensaje y compártalo con soporte.")
+        st.code(traceback.format_exc(), language="text")
+        st.caption("Si esto aparece en la nube, el informe local funciona pero el entorno web falla por lo anterior.")
+
+def _main_impl():
+    # Exigir login: en local siempre; en la web solo si [auth] Microsoft está configurado (acceso por correo).
+    requiere_login = (not _en_streamlit_cloud()) or _auth_microsoft_configured()
+    if requiere_login:
+        try:
+            if not _esta_logueado():
+                if _auth_microsoft_configured():
+                    _pagina_login_microsoft()
+                else:
+                    _pagina_login_registro()
+                return
+        except Exception:
+            _pagina_login_registro()
+            return
+
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo-andres.png")
     if os.path.isfile(logo_path):
@@ -465,15 +775,37 @@ def main():
     """
     st.markdown(header_html, unsafe_allow_html=True)
 
-    MAPEO_SEDES = load_mapeo_sedes()
-    df_op = load_ventas_operativas()
-    df_fin = load_financiero_excel()
+    # En la nube puede no haber base de datos; si falla, mostrar mensaje y no romper (evitar 400)
+    try:
+        MAPEO_SEDES = load_mapeo_sedes()
+        df_op = load_ventas_operativas()
+        df_fin = load_financiero_excel()
+    except Exception as e:
+        if _en_streamlit_cloud():
+            st.info("Informe disponible en la versión local. En la nube no hay base de datos configurada.")
+            st.caption("Para ver datos aquí, sube bi_local_data.db o configura una fuente en la nube.")
+            return
+        raise
 
     if df_op.empty:
         st.error("No hay datos operativos. Ejecuta los ETLs.")
         return
 
-    # --- FILTROS SIDEBAR ---
+    # --- SIDEBAR: usuario (solo si hay sesión) y filtros ---
+    if _esta_logueado():
+        st.sidebar.caption(f"Conectado como **{_usuario_actual() or '—'}**")
+        if st.sidebar.button("Cerrar sesión"):
+            try:
+                if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+                    st.logout()
+            except Exception:
+                pass
+            if st.session_state.get("user"):
+                del st.session_state["user"]
+            if st.session_state.get("_oauth_user"):
+                del st.session_state["_oauth_user"]
+            st.rerun()
+        st.sidebar.markdown("---")
     st.sidebar.header("Filtros")
     u_f = df_op['Fecha'].max()
     if not isinstance(u_f, date):

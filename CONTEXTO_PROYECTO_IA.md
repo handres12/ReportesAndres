@@ -9,7 +9,7 @@
 
 - **Dashboard BI en Streamlit** para **Andrés Carne de Res**: informe de ventas con filtros por fecha, restaurante y grupo.
 - **Datos:** ventas operativas (SQL Server/Micros) + presupuesto e histórico (Excel) → todo consolidado en **SQLite** (`bi_local_data.db`). La app **solo lee** de SQLite; los ETLs escriben en SQLite desde SQL Server y Excel.
-- **Publicado en:** Streamlit Community Cloud → `https://reportesandres.streamlit.app` (repo GitHub: `handres12/ReportesAndres`).
+- **Publicado en:** Streamlit Community Cloud → `https://reportesandresbi.streamlit.app` (repo GitHub: `handres12/ReportesAndres`).
 
 ---
 
@@ -50,7 +50,7 @@
 | **bi_local_data.db** | SQLite principal. No subir si tiene datos sensibles; en Cloud puede estar vacío o ser copia. |
 | **.streamlit/config.toml** | Tema y opciones Streamlit (sin `[theme.sidebar]` en 1.19). |
 | **.streamlit/secrets.toml** | Secrets (auth Microsoft, etc.). No commitear; está en `.gitignore`. |
-| **requirements.txt** | `streamlit>=1.42.0`, `Authlib>=1.3.2`, pandas, sqlalchemy, passlib[bcrypt], etc. |
+| **requirements.txt** | `streamlit>=1.52.2`, `Authlib>=1.3.2`, `requests`, pandas, sqlalchemy, passlib[bcrypt], etc. |
 | **runtime.txt** | `python-3.11.9` (Cloud). |
 | **check_transacciones.py** | Script de diagnóstico: por qué no salen transacciones (lee solo SQLite, no modifica la app). |
 
@@ -105,15 +105,15 @@
 
 - **MEMORIA_PROYECTO.md** — Reglas para la IA, diccionario de archivos, mapeos, protocolo de blindaje.
 - **DOCUMENTACION.md** — Tablas, bases, proceso ventas/transacciones/ticket, ETL, modelos.
-- **AUTH_MICROSOFT.md** — Configurar login con Microsoft (Outlook/Entra). **CONFIGURAR_TENANT_OUTLOOK.md** — Paso a paso para configurar el tenant y conectar con el correo Outlook.
+- **AUTH_MICROSOFT.md** — Configurar login con Microsoft (Outlook/Entra). **CONFIGURAR_TENANT_OUTLOOK.md** — Tenant y correo Outlook. **PASO_A_PASO_LOGIN_MICROSOFT.md** — Pasos local; **PASO_A_PASO_LOGIN_WEB.md** — Pasos web (flujo Authlib, URI raíz en Azure).
 - **PUBLICAR_INFORME_PASO_A_PASO.md** / **PUBLICAR_WEB.md** — Pasos para publicar en la web.
 
 ---
 
 ## Última actualización
 
-- **Fecha:** 2026-03-09  
-- **Cambios recientes:** FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app.
+- **Fecha:** 2026-03-12  
+- **Cambios recientes:** Login Microsoft local + web (OAuth Authlib en Cloud). Backup app_backup_actual.py. Docs PASO_A_PASO_LOGIN_*.md. — FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app.
 
 **Al hacer cambios relevantes:** editar la sección que corresponda arriba y añadir una línea aquí, por ejemplo:  
 `- YYYY-MM-DD: [descripción breve del cambio].`

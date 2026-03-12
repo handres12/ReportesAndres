@@ -2,7 +2,7 @@
 
 **Para entrar en contexto rápido (IA o humano):** leer primero **`CONTEXTO_PROYECTO_IA.md`**.
 
-**Última actualización:** Marzo 2026  
+**Última actualización:** 2026-03-12 (login Microsoft local + web; backup app_backup_actual.py)  
 **Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel) usando una base de datos local SQLite (bi_local_data.db).
 
 ## 1. REGLAS ESTRICTAS PARA LA IA
@@ -13,7 +13,9 @@
 
 ## 2. DICCIONARIO DE ARCHIVOS (ARQUITECTURA)
 * **`.env`**: Variables de entorno (Credenciales SQL Server y SQLite local).
-* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Cruza y visualiza la data.
+* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Login (Microsoft en local y web con Authlib en Cloud), cruce y visualización de datos.
+* **`auth.py`**: Login usuario/contraseña (tabla `usuarios`, bcrypt). Se usa si no hay [auth] Microsoft.
+* **`app_backup_actual.py`**: Copia de seguridad de app.py. Actualizado 2026-03-12.
 * **`bi_local_data.db`**: Base de datos SQLite principal. Convergen todos los ETLs.
 * **`database.py`**: Conexiones SQLAlchemy a SQL Server y SQLite.
 * **`models.py`**: Estructura de tablas locales (ej. `RawVentas2026`).
