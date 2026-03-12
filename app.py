@@ -2,12 +2,16 @@ import streamlit as st
 import pandas as pd
 import os
 import base64
+import traceback
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from datetime import date, timedelta
 import calendar
 
-import auth
+try:
+    import auth
+except Exception:
+    auth = None  # En la nube puede fallar si falta passlib; la app sigue y mostramos mensaje
 
 # Cargar variables de entorno
 load_dotenv()
@@ -494,9 +498,17 @@ def _pagina_login_registro():
     """Login/registro con usuario y contraseña (cuando no hay auth Microsoft)."""
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     st.markdown("## Acceso al informe de ventas")
+    if auth is None:
+        st.error("Módulo de autenticación no disponible en este entorno. Contacte al administrador.")
+        return
+    try:
+        engine = get_engine()
+        auth.init_auth_table(engine)
+    except Exception as e:
+        st.error("No se pudo conectar a la base de datos.")
+        st.code(str(e))
+        return
     tab1, tab2 = st.tabs(["Iniciar sesión", "Registrarse"])
-    engine = get_engine()
-    auth.init_auth_table(engine)
 
     with tab1:
         with st.form("login_form"):
@@ -545,6 +557,14 @@ def _esta_logueado():
     return False
 
 def main():
+    try:
+        _main_impl()
+    except Exception as e:
+        st.error("Error al cargar la aplicación. Copie el mensaje y compártalo con soporte.")
+        st.code(traceback.format_exc(), language="text")
+        st.caption("Si esto aparece en la nube, el informe local funciona pero el entorno web falla por lo anterior.")
+
+def _main_impl():
     try:
         if not _esta_logueado():
             if _auth_microsoft_configured():
