@@ -50,21 +50,22 @@ def _oauth_cloud_handle_callback():
         import requests
         from authlib.integrations.requests_client import OAuth2Session
         meta = requests.get(cfg["server_metadata_url"], timeout=10).json()
-        auth_endpoint = meta.get("authorization_endpoint")
         token_endpoint = meta.get("token_endpoint")
         userinfo_endpoint = meta.get("userinfo_endpoint")
         if not token_endpoint:
+            st.session_state["_oauth_error"] = "No token_endpoint en metadata"
             return False
         client = OAuth2Session(
             cfg["client_id"], cfg["client_secret"],
             redirect_uri=cfg["redirect_uri_root"],
             scope="openid profile email",
         )
-        # State viene en la URL; Authlib lo compara con client.session
         if "state" in st.query_params:
             client.session["state"] = st.query_params["state"]
         q = st.query_params
-        auth_response = cfg["redirect_uri_root"].rstrip("/") + "?" + "&".join(f"{k}={v}" for k, v in q.items())
+        # La URL de callback debe coincidir exactamente con la registrada en Azure (con o sin barra final)
+        base = cfg["redirect_uri_root"].rstrip("/")
+        auth_response = base + "?" + "&".join(f"{k}={v}" for k, v in q.items())
         token = client.fetch_token(token_endpoint, authorization_response=auth_response)
         user_info = {}
         if userinfo_endpoint:
@@ -75,10 +76,12 @@ def _oauth_cloud_handle_callback():
             "name": user_info.get("name") or user_info.get("preferred_username") or "",
             "email": user_info.get("email") or user_info.get("preferred_username") or "",
         }
-        # Rerun en la misma sesión (sin redirigir: si usamos location.replace se pierde session_state)
+        if "_oauth_error" in st.session_state:
+            del st.session_state["_oauth_error"]
         st.rerun()
         return True
-    except Exception:
+    except Exception as e:
+        st.session_state["_oauth_error"] = str(e)
         return False
 
 def _oauth_cloud_auth_url():
@@ -606,6 +609,9 @@ def _pagina_login_microsoft():
     # En la nube: usar enlace a URL de Authlib (evita bug de st.login + oauth2callback)
     auth_url_cloud = _oauth_cloud_auth_url() if _oauth_cloud_get_config() else None
     if auth_url_cloud:
+        if st.session_state.get("_oauth_error"):
+            st.error("Error al completar el login: " + st.session_state["_oauth_error"])
+            st.caption("Si el error menciona redirect_uri, revisa que en Azure esté exactamente: https://reportesandresbi.streamlit.app/ (con barra final).")
         st.markdown("Haz clic en el botón para ir a Microsoft y autorizar el acceso.")
         st.link_button("Iniciar sesión con Microsoft", url=auth_url_cloud, type="primary")
         cfg = _oauth_cloud_get_config()
