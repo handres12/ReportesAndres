@@ -1,3 +1,5 @@
+# App (local y nube): no incluir pyodbc aquí; en Linux (Streamlit Cloud) suele fallar.
+# Para ETL local (etl_maestros, etl_sql) instala aparte: pip install pyodbc
 fastapi
 uvicorn
 sqlalchemy
@@ -6,7 +8,6 @@ python-multipart
 python-dotenv
 itsdangerous
 passlib[bcrypt]
-pyodbc
 pandas
 openpyxl
 pyyaml
