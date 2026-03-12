@@ -564,17 +564,23 @@ def main():
         st.code(traceback.format_exc(), language="text")
         st.caption("Si esto aparece en la nube, el informe local funciona pero el entorno web falla por lo anterior.")
 
+def _en_streamlit_cloud():
+    """True si la app corre en Streamlit Cloud (no en tu PC)."""
+    return "/mount/src" in os.path.abspath(__file__)
+
 def _main_impl():
-    try:
-        if not _esta_logueado():
-            if _auth_microsoft_configured():
-                _pagina_login_microsoft()
-            else:
-                _pagina_login_registro()
+    # En la web (Streamlit Cloud): informe directo, sin exigir login. En local: login con Microsoft o usuario/contraseña.
+    if not _en_streamlit_cloud():
+        try:
+            if not _esta_logueado():
+                if _auth_microsoft_configured():
+                    _pagina_login_microsoft()
+                else:
+                    _pagina_login_registro()
+                return
+        except Exception:
+            _pagina_login_registro()
             return
-    except Exception:
-        _pagina_login_registro()
-        return
 
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo-andres.png")
@@ -603,15 +609,19 @@ def _main_impl():
         st.error("No hay datos operativos. Ejecuta los ETLs.")
         return
 
-    # --- SIDEBAR: usuario y filtros ---
-    st.sidebar.caption(f"Conectado como **{_usuario_actual() or '—'}**")
-    if st.sidebar.button("Cerrar sesión"):
-        if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
-            st.logout()
-        if st.session_state.get("user"):
-            del st.session_state["user"]
-        st.rerun()
-    st.sidebar.markdown("---")
+    # --- SIDEBAR: usuario (solo si hay sesión) y filtros ---
+    if _esta_logueado():
+        st.sidebar.caption(f"Conectado como **{_usuario_actual() or '—'}**")
+        if st.sidebar.button("Cerrar sesión"):
+            try:
+                if _auth_microsoft_configured() and getattr(st.user, "is_logged_in", False):
+                    st.logout()
+            except Exception:
+                pass
+            if st.session_state.get("user"):
+                del st.session_state["user"]
+            st.rerun()
+        st.sidebar.markdown("---")
     st.sidebar.header("Filtros")
     u_f = df_op['Fecha'].max()
     if not isinstance(u_f, date):
