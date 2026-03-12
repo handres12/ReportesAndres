@@ -12,5 +12,6 @@ pandas
 openpyxl
 pyyaml
 altair>=4.2.0,<5
-streamlit>=1.42.0
+requests
+streamlit>=1.52.2
 Authlib>=1.3.2
