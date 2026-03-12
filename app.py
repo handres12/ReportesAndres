@@ -46,6 +46,8 @@ def _oauth_cloud_handle_callback():
     cfg = _oauth_cloud_get_config()
     if not cfg or "code" not in st.query_params:
         return False
+    if "_oauth_error" in st.session_state:
+        del st.session_state["_oauth_error"]
     try:
         import requests
         from authlib.integrations.requests_client import OAuth2Session
@@ -81,7 +83,11 @@ def _oauth_cloud_handle_callback():
         st.rerun()
         return True
     except Exception as e:
-        st.session_state["_oauth_error"] = str(e)
+        err = str(e)
+        if "invalid_grant" in err or "AADSTS70008" in err or "expired" in err.lower():
+            st.session_state["_oauth_error"] = "El código de autorización expiró o ya se usó. Haz clic de nuevo en «Iniciar sesión con Microsoft» (el código solo vale unos minutos)."
+        else:
+            st.session_state["_oauth_error"] = err
         return False
 
 def _oauth_cloud_auth_url():
@@ -610,9 +616,10 @@ def _pagina_login_microsoft():
     auth_url_cloud = _oauth_cloud_auth_url() if _oauth_cloud_get_config() else None
     if auth_url_cloud:
         if st.session_state.get("_oauth_error"):
-            st.error("Error al completar el login: " + st.session_state["_oauth_error"])
-            st.caption("Si el error menciona redirect_uri, revisa que en Azure esté exactamente: https://reportesandresbi.streamlit.app/ (con barra final).")
-        st.markdown("Haz clic en el botón para ir a Microsoft y autorizar el acceso.")
+            st.error(st.session_state["_oauth_error"])
+            if "redirect_uri" in st.session_state.get("_oauth_error", ""):
+                st.caption("Revisa que en Azure esté exactamente: https://reportesandresbi.streamlit.app/ (con barra final).")
+        st.markdown("Haz clic en el botón para ir a Microsoft y autorizar el acceso. **No esperes mucho** después de autorizar: vuelve a la pestaña en seguida.")
         st.link_button("Iniciar sesión con Microsoft", url=auth_url_cloud, type="primary")
         cfg = _oauth_cloud_get_config()
         if cfg:
