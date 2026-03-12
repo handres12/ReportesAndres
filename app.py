@@ -75,14 +75,8 @@ def _oauth_cloud_handle_callback():
             "name": user_info.get("name") or user_info.get("preferred_username") or "",
             "email": user_info.get("email") or user_info.get("preferred_username") or "",
         }
-        # Redirigir a la URL limpia para no dejar code en la barra de direcciones
-        st.markdown(
-            f'<meta http-equiv="refresh" content="0;url={cfg["redirect_uri_root"]}" />'
-            f'<script>window.location.replace("{cfg["redirect_uri_root"]}");</script>'
-            '<p>Iniciando sesión…</p>',
-            unsafe_allow_html=True,
-        )
-        st.stop()
+        # Rerun en la misma sesión (sin redirigir: si usamos location.replace se pierde session_state)
+        st.rerun()
         return True
     except Exception:
         return False
