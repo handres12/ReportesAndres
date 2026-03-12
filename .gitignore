@@ -1,5 +1,6 @@
 # No subir contraseñas ni entornos
 .env
+.streamlit/secrets.toml
 venv/
 .venv/
 

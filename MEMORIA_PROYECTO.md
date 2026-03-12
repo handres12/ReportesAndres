@@ -1,5 +1,8 @@
 # ESTADO DEL PROYECTO: BI ANDRÉS CARNE DE RES
-**Última actualización:** Marzo 2026
+
+**Para entrar en contexto rápido (IA o humano):** leer primero **`CONTEXTO_PROYECTO_IA.md`**.
+
+**Última actualización:** Marzo 2026  
 **Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel) usando una base de datos local SQLite (bi_local_data.db).
 
 ## 1. REGLAS ESTRICTAS PARA LA IA
