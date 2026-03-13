@@ -411,6 +411,22 @@ BRAND_CSS = """
 # Orden fijo de grupos (alineado al reporte Excel)
 ORDEN_GRUPOS = ['RBB', 'PLAZAS', 'PARADERO FR', 'PARADERO', 'EXPRÉS', 'OTROS']
 
+# Orden fijo de sedes dentro de cada grupo (usado en todas las pestañas)
+ORDEN_SEDES = [
+    # RBB
+    "ACR", "ADC", "CARTAGENA", "MEDELLIN",
+    # PLAZAS
+    "GRAN ESTACIÓN", "HACIENDA", "RETIRO", "SANTAFÉ",
+    # PARADERO FR
+    "BAZAAR", "HYATT", "PLAZA CLARO",
+    # PARADERO
+    "AEROPUERTO", "ANDRES VIAJERO", "RIONEGRO",
+    # EXPRÉS
+    "CAFAM", "CALLE 93", "CASA DE LOS ANDES", "EXPRÉS PARADERO",
+    "MULTIPARQUE", "PALATINO", "PEPE SIERRA",
+]
+ORDEN_SEDES_MAP = {nombre: idx for idx, nombre in enumerate(ORDEN_SEDES)}
+
 # Meses en español para toda la interfaz
 MESES_ES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
@@ -923,7 +939,9 @@ def _main_impl():
             dg = df_sedes[df_sedes['Grupo'] == grp]
             if dg.empty:
                 continue
-            for _, r in dg.sort_values('Sede_Nom').iterrows():
+            # Ordenar sedes según ORDEN_SEDES; si no está mapeada, va al final en orden alfabético
+            orden = dg['Sede_Nom'].map(ORDEN_SEDES_MAP).fillna(len(ORDEN_SEDES)).astype(int)
+            for _, r in dg.assign(_orden=orden).sort_values(['_orden', 'Sede_Nom']).iterrows():
                 v = r[col_venta] if col_venta in r else 0
                 p = r[col_ppto] if col_ppto and col_ppto in r else 0
                 filas.append({'Grupo': grp, 'RESTAURANTE': r['Sede_Nom'], 'venta': v, 'ppto': p, 'es_total': False})
@@ -999,7 +1017,14 @@ def _main_impl():
             codigos = codigos_r | codigos_h
             filas2 = []
             for grp in ORDEN_GRUPOS:
-                for c in codigos:
+                codigos_ordenados = sorted(
+                    codigos,
+                    key=lambda c: ORDEN_SEDES_MAP.get(
+                        MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))[1],
+                        len(ORDEN_SEDES),
+                    ),
+                )
+                for c in codigos_ordenados:
                     g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
                     if g != grp or n not in s_filtro or g not in g_filtro:
                         continue
@@ -1034,7 +1059,15 @@ def _main_impl():
         codigos = set(df_r['codigo_sede_crudo']).union(set(df_p['codigo_sede_crudo']) if not df_p.empty else set())
         filas3 = []
         for grp in ORDEN_GRUPOS:
-            for c in codigos:
+            # Ordenar códigos según el nombre de sede y ORDEN_SEDES
+            codigos_ordenados = sorted(
+                codigos,
+                key=lambda c: ORDEN_SEDES_MAP.get(
+                    MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))[1],
+                    len(ORDEN_SEDES),
+                ),
+            )
+            for c in codigos_ordenados:
                 g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
                 if g != grp or n not in s_filtro or g not in g_filtro:
                     continue
@@ -1084,7 +1117,14 @@ def _main_impl():
             ppto_mes_total = ppto_mes_por_sede.sum() if hasattr(ppto_mes_por_sede, 'sum') else 0
             filas4 = []
             for grp in ORDEN_GRUPOS:
-                for c in codigos:
+                codigos_ordenados = sorted(
+                    codigos,
+                    key=lambda c: ORDEN_SEDES_MAP.get(
+                        MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))[1],
+                        len(ORDEN_SEDES),
+                    ),
+                )
+                for c in codigos_ordenados:
                     g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
                     if g != grp or n not in s_filtro or g not in g_filtro:
                         continue

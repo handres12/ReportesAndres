@@ -137,13 +137,22 @@ def procesar_presupuesto(ruta_archivo):
     return df_clean.dropna(subset=['Punto de venta', 'Mes'])
 
 def procesar_historico_mensual(ruta_archivo, nombre_valor):
-    if not ruta_archivo: return pd.DataFrame()
+    if not ruta_archivo:
+        return pd.DataFrame()
     df = leer_archivo_robusto(ruta_archivo, header_val=1)
-    if df.empty: return df
-    
+    if df.empty:
+        return df
+
+    # Validar que el archivo tenga el formato esperado (Punto de venta, Mes).
+    # Si no, no rompemos el ETL y simplemente ignoramos este histórico mensual.
+    df.columns = [str(c).strip() for c in df.columns]
+    if 'Punto de venta' not in df.columns or 'Mes' not in df.columns:
+        print("[!] Historico_mensual: se esperaban columnas 'Punto de venta' y 'Mes'. Se omite este archivo. Columnas encontradas:", list(df.columns)[:6])
+        return pd.DataFrame()
+
     df = df.dropna(subset=['Punto de venta', 'Mes'])
     df = df[~df['Punto de venta'].str.contains('Total', case=False, na=False)]
-    
+
     df_melt = df.melt(id_vars=['Punto de venta', 'Mes'], var_name='Anio', value_name='Valor')
     df_melt['Anio'] = pd.to_numeric(df_melt['Anio'], errors='coerce')
     df_melt['Valor'] = pd.to_numeric(df_melt['Valor'], errors='coerce').fillna(0)
