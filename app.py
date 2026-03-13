@@ -145,7 +145,7 @@ def _dataframe_serializable(df):
     return out
 
 # Configuración de página
-st.set_page_config(page_title="Dashboard BI - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Ventas al Público - Andrés Carne de Res", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 # --- Estilo: tipografía clara, paleta profesional, sin tocar tablas ni valores ---
 BRAND_CSS = """
@@ -768,7 +768,7 @@ def _main_impl():
     <div class="brand-header">
       <img src="{logo_src}" alt="Andrés Carne de Res" class="brand-logo" />
       <div>
-        <div class="brand-title">Informe de Ventas · Andrés Carne de Res</div>
+        <div class="brand-title">Ventas al Público · Andrés Carne de Res</div>
         <div class="brand-subtitle">Seguimiento diario y acumulado · Presupuesto, histórico y transacciones</div>
       </div>
     </div>
