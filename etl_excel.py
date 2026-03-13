@@ -1,9 +1,29 @@
 import pandas as pd
 import calendar
+import unicodedata
 from datetime import date
 from sqlalchemy import text
 from database import engine_local, SessionLocalDB
 import os
+
+
+def _normalizar_acentos(s):
+    """Quita tildes para hacer coincidir nombres del Excel (ej. Estación vs Estacion)."""
+    if not s or not isinstance(s, str):
+        return s
+    nfd = unicodedata.normalize("NFD", s)
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
+def _buscar_store_id(punto):
+    """Devuelve StoreID_External para 'Punto de venta'; prueba con y sin acentos."""
+    p = str(punto).strip().upper()
+    sid = SEDES_MAP.get(p)
+    if sid is not None:
+        return sid
+    p_sin = _normalizar_acentos(p)
+    return SEDES_MAP.get(p_sin)
+
 
 MESES_MAP = {
     'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
@@ -17,10 +37,10 @@ SEDES_MAP = {
     'ADC': '003', 'ANDRES ADC': '003', 'ANDRES DC BOGOTA': '003', 'ANDRES D.C.': '003',
     'CARTAGENA': 'F08', 'ANDRES CARTAGENA': 'F08',
     'MEDELLIN': '201', 'ANDRES MEDELLIN': '201', 'ANDRÉS MEDELLÍN': '201',
-    'GRAN ESTACIÓN': '404', 'PLAZA GRAN ESTACIÓN': '404', 'PLAZA GRAN ESTACION': '404', 'PLAZA G.ESTACION': '404',
-    'HACIENDA': '402', 'PLAZA HACIENDA SANTA BARBARA': '402', 'PLAZA HACIENDA': '402',
-    'RETIRO': '401', 'PLAZA RETIRO': '401', 'PLAZA CENTRO COMERCIAL RETIRO': '401', 'PLAZA EL RETIRO': '401',
-    'SANTAFÉ': '405', 'PLAZA SANTA FE': '405', 'PLAZA CENTRO COMERCIAL SANTA FE': '405', 'SANTAFE': '405', 'PLAZA SANTAFE': '405', 'PLAZA CC. SANTA FÉ': '405',
+    'GRAN ESTACIÓN': '404', 'GRAN ESTACION': '404', 'PLAZA GRAN ESTACIÓN': '404', 'PLAZA GRAN ESTACION': '404', 'PLAZA G.ESTACION': '404',
+    'HACIENDA': '402', 'HACIENDA SANTA BARBARA': '402', 'PLAZA HACIENDA SANTA BARBARA': '402', 'PLAZA HACIENDA': '402',
+    'RETIRO': '401', 'EL RETIRO': '401', 'PLAZA RETIRO': '401', 'PLAZA CENTRO COMERCIAL RETIRO': '401', 'PLAZA EL RETIRO': '401',
+    'SANTAFÉ': '405', 'SANTAFE': '405', 'SANTA FE': '405', 'PLAZA SANTA FE': '405', 'PLAZA CENTRO COMERCIAL SANTA FE': '405', 'PLAZA SANTAFE': '405', 'PLAZA CC. SANTA FÉ': '405',
     'BAZAAR': 'F09', 'BAZAR80': 'F09', 'FRANQUICIA BAZZAR80': 'F09', 'BAZAAR 80': 'F09',
     'HYATT': 'F05', 'HOTEL HYATT': 'F05', 'FRANQUICIA HYATT': 'F05',
     'PLAZA CLARO': 'F04', 'FRANQUICIA PLAZA CLARO': 'F04',
@@ -58,6 +78,81 @@ def obtener_rutas():
         elif "ventas" in f_low and "2025" not in f_low and "dia" not in f_low and not r_ventas: r_ventas = ruta
             
     return r_ventas, r_trans, r_presup, r_2025
+
+
+def obtener_ruta_ventas_mes_ano():
+    """Busca 'ventas por restaurante por mes por año' (o similar) para comparativo 2025."""
+    carpetas = [os.getcwd(), os.path.join(os.getcwd(), "fuentes_excel")]
+    for carpeta in carpetas:
+        if not os.path.exists(carpeta):
+            continue
+        for f in os.listdir(carpeta):
+            if f.startswith("~$") or not (f.lower().endswith(".xlsx") or f.lower().endswith(".xls")):
+                continue
+            f_low = f.lower()
+            if "ventas" in f_low and "mes" in f_low and ("año" in f_low or "ano" in f_low):
+                return os.path.join(carpeta, f)
+    return None
+
+
+def procesar_historico_2025_desde_mensual(ruta_archivo):
+    """
+    Lee Excel 'ventas por restaurante por mes por año': columnas Punto de venta, Mes, y año 2025.
+    Diariza el valor mensual (reparte entre días del mes) y retorna filas para hechos_excel_diario (Escenario Historico_2025_Excel).
+    """
+    if not ruta_archivo or not os.path.isfile(ruta_archivo):
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(ruta_archivo, header=0)
+    except Exception as e:
+        print(f"[X] Error leyendo ventas por mes por año {ruta_archivo}: {e}")
+        return pd.DataFrame()
+    df.columns = [str(c).strip() for c in df.columns]
+    if "Punto de venta" not in df.columns or "Mes" not in df.columns:
+        print("[!] ventas por mes por año: se esperan columnas 'Punto de venta' y 'Mes'. Encontradas:", list(df.columns)[:8])
+        return pd.DataFrame()
+    col_2025 = None
+    for c in df.columns:
+        if str(c).strip() == "2025":
+            col_2025 = c
+            break
+    if col_2025 is None:
+        print("[!] ventas por mes por año: no se encontró columna 2025. Columnas:", list(df.columns))
+        return pd.DataFrame()
+    df = df.dropna(subset=["Punto de venta", "Mes"])
+    df["Mes"] = df["Mes"].astype(str).str.strip().str.lower()
+    df["Ventas_2025"] = pd.to_numeric(df[col_2025], errors="coerce").fillna(0)
+    filas = []
+    omitidos = set()
+    for _, row in df.iterrows():
+        punto = str(row["Punto de venta"]).strip().upper()
+        mes_str = row["Mes"]
+        mes_num = MESES_MAP.get(mes_str)
+        if mes_num is None:
+            continue
+        store_id = _buscar_store_id(punto)
+        if store_id is None:
+            omitidos.add(row["Punto de venta"])
+            continue
+        ventas_mes = row["Ventas_2025"]
+        _, dias_mes = calendar.monthrange(2025, mes_num)
+        venta_dia = ventas_mes / dias_mes if dias_mes else 0
+        for dia in range(1, dias_mes + 1):
+            filas.append({
+                "StoreID_External": store_id,
+                "Sede_Excel": row["Punto de venta"],
+                "Fecha": date(2025, mes_num, dia),
+                "Escenario": "Historico_2025_Excel",
+                "Ventas": venta_dia,
+                "Transacciones": 0,
+                "Ticket_Promedio": 0,
+            })
+    if omitidos:
+        print(f"[!] ventas por mes por año: puntos no mapeados (añadir a SEDES_MAP si son PLAZAS/sedes): {sorted(omitidos)}")
+    if not filas:
+        return pd.DataFrame()
+    out = pd.DataFrame(filas)
+    return out
 
 
 def obtener_ruta_pp_2026_dia():
@@ -240,11 +335,15 @@ def ejecutar_etl():
         
     df_hist_diarizado = diarizar_mensual(df_hist_mensual, 'Historico_Diarizado')
     df_2025_exacto = procesar_diario_2025(ruta_2025) if ruta_2025 else pd.DataFrame()
+    ruta_ventas_mes_ano = obtener_ruta_ventas_mes_ano()
+    df_2025_excel = procesar_historico_2025_desde_mensual(ruta_ventas_mes_ano) if ruta_ventas_mes_ano else pd.DataFrame()
+    if not df_2025_excel.empty:
+        print(f"[OK] Histórico 2025 desde Excel (ventas por mes por año): {len(df_2025_excel)} registros.")
     ruta_pp_2026_dia = obtener_ruta_pp_2026_dia()
     df_pp_2026_dia = procesar_presupuesto_diario_2026(ruta_pp_2026_dia) if ruta_pp_2026_dia else pd.DataFrame()
     if not df_pp_2026_dia.empty:
         print(f"[OK] Presupuesto diario 2026 (PP x día): {len(df_pp_2026_dia)} registros.")
-    partes = [df_hist_diarizado, df_pres_diarizado, df_2025_exacto, df_pp_2026_dia]
+    partes = [df_hist_diarizado, df_pres_diarizado, df_2025_exacto, df_pp_2026_dia, df_2025_excel]
     df_final = pd.concat([p for p in partes if not p.empty], ignore_index=True)
     if df_final.empty:
         return
@@ -271,7 +370,7 @@ def ejecutar_etl():
     df_final['Agrupacion'] = df_final.apply(asignar_grupo_final, axis=1)
 
     # Solo reemplazar los escenarios que estamos cargando; preservar Historico_Diario si vino del FTP
-    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026']
+    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026', 'Historico_2025_Excel']
     if not df_2025_exacto.empty:
         escenarios_a_borrar.append('Historico_Diario')
     placeholders = ", ".join([f"'{e}'" for e in escenarios_a_borrar])

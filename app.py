@@ -543,6 +543,8 @@ def load_financiero_excel():
             df = pd.read_sql(text(query), con=conn)
         if not df.empty:
             df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+            # Normalizar codigo para que coincida con MAPEO_SEDES (evita que sedes como Andrés Viajero queden en 0 en acumulado)
+            df['codigo_sede_crudo'] = df['codigo_sede_crudo'].astype(str).str.strip().str.upper().str.lstrip('0')
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -853,6 +855,8 @@ def _main_impl():
     alinear = _sidebar_toggle("Lunes vs Lunes (comparativo 2025)", value=True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
+    # Pestaña 4: true = mismo rango (1-X ppto vs 1-X ventas); false = presupuesto total mes vs ventas acum 1-X
+    ppto_acum_mismo_rango = _sidebar_toggle("Ppto acumulado: mismo rango (1-X vs 1-X)", value=True)
     if f_inicio and f_fin:
         if f_inicio == f_fin:
             d1 = f"{DIAS_SEMANA[f_inicio.weekday()]} {f_inicio.day} de {MESES_ES[f_inicio.month]} de {f_inicio.year}"
@@ -871,6 +875,7 @@ def _main_impl():
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
 
+    # Comparativo 2025: datos del Excel descargado del FTP (Historico_Diario), cargado con listar_ftp_ventas_2025.py --cargar
     df_h_raw = df_fin[(df_fin['Fecha'] >= f_inicio_25) & (df_fin['Fecha'] <= f_fin_25) & (df_fin['Escenario'].str.contains('Historico', na=False))].copy()
     if not df_h_raw.empty:
         df_h_raw['Sede_Nom'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
@@ -911,8 +916,14 @@ def _main_impl():
             df_r_acum = pd.DataFrame(columns=['codigo_sede_crudo', 'Venta_Real', 'Sede_Nom', 'Grupo'])
         _, last_d = calendar.monthrange(y, m)
         fin_mes = date(y, m, last_d)
-        mask_ppto_mes = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= fin_mes) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
-        mask_ppto_acum = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
+        # Acumulado usa el mismo archivo que el diario (PP 2026 X Día) si existe; si no, Presupuesto_Diarizado
+        mask_ppto_mes_pp = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= fin_mes) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')
+        mask_ppto_acum_pp = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')
+        mask_ppto_mes_old = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= fin_mes) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
+        mask_ppto_acum_old = (df_fin['Fecha'] >= inicio_mes) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')
+        use_pp_diario = not df_fin[mask_ppto_acum_pp].empty
+        mask_ppto_mes = mask_ppto_mes_pp if use_pp_diario else mask_ppto_mes_old
+        mask_ppto_acum = mask_ppto_acum_pp if use_pp_diario else mask_ppto_acum_old
         df_p_mes = df_fin[mask_ppto_mes].copy()
         df_p_acum_r = df_fin[mask_ppto_acum].copy()
         if not df_p_mes.empty:
@@ -1114,7 +1125,6 @@ def _main_impl():
             st.info("Sin datos acumulados para el mes.")
         else:
             codigos = set(df_r_acum['codigo_sede_crudo']).union(set(df_p_acum['codigo_sede_crudo']) if not df_p_acum.empty else set())
-            ppto_mes_total = ppto_mes_por_sede.sum() if hasattr(ppto_mes_por_sede, 'sum') else 0
             filas4 = []
             for grp in ORDEN_GRUPOS:
                 codigos_ordenados = sorted(
@@ -1131,23 +1141,34 @@ def _main_impl():
                     vacum = df_r_acum[df_r_acum['codigo_sede_crudo'] == c]['Venta_Real'].sum()
                     pacum = df_p_acum[df_p_acum['codigo_sede_crudo'] == c]['Ventas'].sum() if not df_p_acum.empty and 'Ventas' in df_p_acum.columns else 0
                     pmes = ppto_mes_por_sede.get(c, 0) if hasattr(ppto_mes_por_sede, 'get') else (ppto_mes_por_sede[c] if c in ppto_mes_por_sede.index else 0)
-                    var = (vacum / pacum - 1) if pacum and pacum > 0 else None
+                    if ppto_acum_mismo_rango:
+                        var = (vacum / pacum - 1) if pacum and pacum > 0 else None
+                    else:
+                        var = (vacum / pmes - 1) if pmes and pmes > 0 else None
                     filas4.append({'Grupo': grp, 'RESTAURANTE': n, 'venta_acum': vacum, 'ppto_acum': pacum, 'ppto_mes': pmes, 'var': var, 'es_total': False})
                 dg = [f for f in filas4 if f['Grupo'] == grp and not f['es_total']]
                 if dg:
                     va = sum(x['venta_acum'] for x in dg)
                     pa = sum(x['ppto_acum'] for x in dg)
-                    var_grp = (va / pa - 1) if pa and pa > 0 else None
-                    filas4.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'venta_acum': va, 'ppto_acum': pa, 'ppto_mes': 0, 'var': var_grp, 'es_total': True})
+                    pm = sum(x['ppto_mes'] for x in dg)
+                    var_grp = (va / pa - 1) if ppto_acum_mismo_rango and pa and pa > 0 else ((va / pm - 1) if not ppto_acum_mismo_rango and pm and pm > 0 else None)
+                    filas4.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'venta_acum': va, 'ppto_acum': pa, 'ppto_mes': pm, 'var': var_grp, 'es_total': True})
             if filas4:
                 tot_va = sum(f['venta_acum'] for f in filas4 if f['es_total'])
                 tot_pa = sum(f['ppto_acum'] for f in filas4 if f['es_total'])
+                tot_pmes = sum(f['ppto_mes'] for f in filas4 if f['es_total'])
                 ppto_mes_gral = df_p_mes['Ventas'].sum() if not df_p_mes.empty and 'Ventas' in df_p_mes.columns else 0
-                var_tot = (tot_va / tot_pa - 1) if tot_pa and tot_pa > 0 else None
+                if ppto_acum_mismo_rango:
+                    var_tot = (tot_va / tot_pa - 1) if tot_pa and tot_pa > 0 else None
+                else:
+                    var_tot = (tot_va / ppto_mes_gral - 1) if ppto_mes_gral and ppto_mes_gral > 0 else None
                 filas4.append({'Grupo': '', 'RESTAURANTE': 'Total', 'venta_acum': tot_va, 'ppto_acum': tot_pa, 'ppto_mes': ppto_mes_gral, 'var': var_tot, 'es_total': True})
                 c1, c2, _ = st.columns([2, 2, 4])
                 with c1:
-                    st.metric("Presupuesto mes " + MESES_ES[f_fin.month], f_moneda(ppto_mes_gral))
+                    if ppto_acum_mismo_rango:
+                        st.metric("Presupuesto acum. 1-" + str(f_fin.day), f_moneda(tot_pa))
+                    else:
+                        st.metric("Presupuesto mes " + MESES_ES[f_fin.month], f_moneda(ppto_mes_gral))
                 with c2:
                     st.metric(
                         "Ventas al público acum. 1-" + str(f_fin.day),
@@ -1155,12 +1176,18 @@ def _main_impl():
                         delta=f"{var_tot:+.0%}" if var_tot is not None else "—",
                     )
                 rows_show = []
+                col_ppto = "PRESUP. ACUM. 1-" + str(f_fin.day) if ppto_acum_mismo_rango else "PRESUP. MES " + MESES_ES[f_fin.month].upper()
                 for f in filas4:
                     rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
                     var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
-                    rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO 2026': f_moneda(f['ppto_acum']), 'VENTAS AL PÚBLICO ACUM.': f_moneda(f['venta_acum']), 'VARIACIÓN': var_str})
+                    ppto_val = f['ppto_acum'] if ppto_acum_mismo_rango else f['ppto_mes']
+                    rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, col_ppto: f_moneda(ppto_val), 'VENTAS AL PÚBLICO ACUM.': f_moneda(f['venta_acum']), 'VARIACIÓN': var_str})
                 df_show4 = pd.DataFrame(rows_show)
                 _st_dataframe(_estilo_tabla_informe(df_show4), hide_index=True)
+                if ppto_acum_mismo_rango:
+                    st.caption("Comparando mismo rango: presupuesto acumulado 1-" + str(f_fin.day) + " vs ventas acumuladas 1-" + str(f_fin.day) + ".")
+                else:
+                    st.caption("Comparando: presupuesto total del mes vs ventas acumuladas 1-" + str(f_fin.day) + ".")
             else:
                 st.info("Sin datos acumulados.")
 if __name__ == "__main__":

@@ -22,10 +22,60 @@ CARPETA_FTP = os.getenv("FTP_CARPETA_VENTAS_2025", "/Ventas por items 2025")
 
 # Nombres posibles para columna de centro/tienda (orden de preferencia)
 COL_CO = ["CentroOP", "Co", "Centro", "Codigo", "StoreID", "Sede", "Tienda"]
-# Nombres posibles para fecha
-COL_FECHA = ["Fecha", "FechaDocto", "Date", "FechaVenta", "Dia"]
-# Nombres posibles para valor de venta (neto o bruto a sumar)
-COL_VENTA = ["VentaNeta", "Ventas", "ValorTotal", "VlrBruto", "ValorTotalDescto", "Amount", "Total"]
+# Nombres posibles para fecha (los Excel "Ventas por items" usan Business Date)
+COL_FECHA = ["Fecha", "FechaDocto", "Date", "FechaVenta", "Dia", "Business Date", "BusinessDate"]
+# Nombres posibles para valor de venta (los Excel "Ventas por items" usan Sales Total)
+COL_VENTA = ["VentaNeta", "Ventas", "ValorTotal", "VlrBruto", "Sales Total", "ValorTotalDescto", "Amount", "Total"]
+
+# Nombre de archivo -> código cuando Co viene vacío o no reconocido (validar PLAZAS)
+FILENAME_A_CODIGO = [
+    ("PLAZA HACIENDA", "402"),
+    ("PLAZA EL RETIRO", "401"),
+    ("PLAZA GRAN ESTACION", "404"),
+    ("PLAZA SANTAFE", "405"),
+    ("PLAZA CLARO", "F04"),
+    ("ACR ", "2"), (" ADC ", "3"), ("CARTAGENA", "F08"), ("RIONEGRO", "305"), ("MEDELLIN", "201"),
+    ("AEROPUERTO INTERNACIONAL", "304"), ("AEROPUERTO ", "301"), ("BAZAR 80", "F09"), ("HYATT", "F05"),
+    ("EXPRES CAFAM", "611"), ("EXPRES CALLE 93", "502"), ("CASA ANDES", "612"), ("EXPRES CHIA", "4"),
+    ("MULTIPARQUE", "702"), ("PALATINO", "604"), ("PEPE SIERRA", "615"),
+]
+# Cuando Co viene como nombre de sede (ej. Plaza Hacienda) en vez de código
+NOMBRE_A_CODIGO = {
+    "hacienda": "402", "plaza hacienda": "402", "plaza hacienda santa barbara": "402",
+    "plaza centro comercial hacienda": "402", "plaza centro comercial, hacienda": "402",
+    "retiro": "401", "plaza retiro": "401", "plaza el retiro": "401", "plaza centro comercial retiro": "401",
+    "gran estacion": "404", "gran estación": "404", "plaza gran estacion": "404", "plaza gran estación": "404",
+    "santafe": "405", "santa fe": "405", "plaza santafe": "405", "plaza santa fe": "405",
+    "plaza centro comercial santa fe": "405",
+    "acr": "2", "andres chia": "2", "adc": "3", "andres dc": "3", "cartagena": "F08", "medellin": "201",
+    "viajero": "304", "orleans": "304", "andres viajero": "304", "aeropuerto internacional": "304",
+    "aeropuerto el dorado": "301", "aeropuerto": "301", "rionegro": "305", "bazar": "F09", "bazar 80": "F09",
+    "hyatt": "F05", "plaza claro": "F04", "cafam": "611", "calle 93": "502", "casa andes": "612",
+    "expres chia": "4", "multiparque": "702", "palatino": "604", "pepe sierra": "615",
+}
+
+CODIGOS_PLAZAS = {"401", "402", "404", "405"}  # Retiro, Hacienda, Gran Estación, Santafe
+
+
+def _co_a_codigo(val):
+    """Convierte CentroOP (código o nombre) a código normalizado; valida PLAZAS por nombre."""
+    s = str(val).strip().replace(",", " ").replace(".", " ").replace("  ", " ").strip()
+    if not s or s.upper() in ("NAN", "NONE"):
+        return s
+    try:
+        f = float(s.replace(",", "."))
+        if f == int(f):
+            return str(int(f)).lstrip("0") or "0"
+    except ValueError:
+        pass
+    su = s.upper().lstrip("0")
+    if su.isdigit() or (len(su) > 1 and su[0] == "F" and su[1:].isdigit()):
+        return su if su else s
+    low = s.lower()
+    for nombre, cod in NOMBRE_A_CODIGO.items():
+        if nombre in low or low in nombre:
+            return cod
+    return s
 
 
 def _normalizar_nombres(df):
@@ -94,6 +144,18 @@ def ejecutar_extraccion_ftp():
                 col_co, col_fecha, col_venta, listado = cols[0], cols[1], cols[2], (cols[3] if len(cols) > 3 else [])
                 print("  ", nombre, "-> columnas no detectadas. Esperadas: CentroOP/Co, Fecha, VentaNeta. Encontradas:", listado[:12] if listado else "?")
                 continue
+            cod_desde_nombre = None
+            for frag, cod in FILENAME_A_CODIGO:
+                if frag in nombre.upper():
+                    cod_desde_nombre = cod
+                    break
+            if cod_desde_nombre is not None:
+                df = df.copy()
+                df["Co"] = cod_desde_nombre
+                print("  ", nombre, "-> Co por nombre de archivo:", cod_desde_nombre)
+            else:
+                df = df.copy()
+                df["Co"] = df["Co"].apply(_co_a_codigo)
             print("  ", nombre, "-> columnas usadas:", cols[:3], "filas:", len(df))
             listado_dfs.append(df)
         except Exception as e:
@@ -126,9 +188,11 @@ def _cargar_grupos_desde_bd():
 
 
 def consolidar_y_cargar_bd(df):
-    """Agrupa por Co y Fecha, asigna grupo, y carga en hechos_excel_diario (Historico_Diario)."""
+    """Agrupa por Co y Fecha, asigna grupo, y carga en hechos_excel_diario (Historico_Diario). Valida PLAZAS."""
     if df is None or df.empty:
         return
+    df = df.copy()
+    df["Co"] = df["Co"].apply(_co_a_codigo)
     agrupado = df.groupby(["Co", "Fecha"], as_index=False).agg({"VentaNeta": "sum"})
     agrupado = agrupado.sort_values(["Co", "Fecha"])
 
@@ -155,10 +219,18 @@ def consolidar_y_cargar_bd(df):
     print("BD: cargados", len(df_carga), "registros en hechos_excel_diario (Historico_Diario).")
 
     # Resumen por Co
-    resumen = agrupado.groupby("Co")["VentaNeta"].agg(["sum", "count"])
+    resumen = agrupado.groupby("StoreID_External")["VentaNeta"].agg(["sum", "count"])
     resumen.columns = ["Total_VentaNeta", "Dias"]
     print("\nResumen por centro (Co):")
     print(resumen.to_string())
+    # Validación PLAZAS: 401 Retiro, 402 Hacienda, 404 Gran Estación, 405 Santafe
+    co_presentes = set(agrupado["StoreID_External"].astype(str).str.strip().str.upper().str.lstrip("0"))
+    plazas_ok = CODIGOS_PLAZAS & co_presentes
+    plazas_faltan = CODIGOS_PLAZAS - co_presentes
+    print("\n--- Validación PLAZAS (comparativo 2025) ---")
+    print("  Con dato: 401 Retiro, 402 Hacienda, 404 Gran Estación, 405 Santafe -> presentes:", sorted(plazas_ok) or "ninguno")
+    if plazas_faltan:
+        print("  Faltan en el archivo FTP (saldrán $0 en pestaña 2):", sorted(plazas_faltan))
     return agrupado
 
 

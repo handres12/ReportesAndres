@@ -262,6 +262,15 @@ def main():
 
     print("\nOK Historico_Diario reemplazado por completo. Registros cargados:", len(df_carga))
     print("Centros (Co) con dato:", sorted(agrupado["StoreID_External"].unique().tolist()))
+    # Validación PLAZAS (pestaña 2 comparativo 2025)
+    CODIGOS_PLAZAS = {"401", "402", "404", "405"}
+    co_presentes = set(agrupado["StoreID_External"].astype(str).str.strip().str.upper().str.lstrip("0"))
+    plazas_ok = CODIGOS_PLAZAS & co_presentes
+    plazas_faltan = CODIGOS_PLAZAS - co_presentes
+    print("--- Validación PLAZAS (401 Retiro, 402 Hacienda, 404 Gran Estación, 405 Santafe) ---")
+    print("  Presentes con dato:", sorted(plazas_ok) if plazas_ok else "ninguno")
+    if plazas_faltan:
+        print("  Faltan (saldrán $0 en pestaña 2):", sorted(plazas_faltan))
 
 
 if __name__ == "__main__":
