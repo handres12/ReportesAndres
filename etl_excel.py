@@ -59,6 +59,54 @@ def obtener_rutas():
             
     return r_ventas, r_trans, r_presup, r_2025
 
+
+def obtener_ruta_pp_2026_dia():
+    """Busca 'PP 2026 x día' (presupuesto 2026 por día) en raíz y fuentes_excel."""
+    carpetas = [os.getcwd(), os.path.join(os.getcwd(), "fuentes_excel")]
+    for carpeta in carpetas:
+        if not os.path.exists(carpeta):
+            continue
+        for f in os.listdir(carpeta):
+            if f.startswith("~$") or not (f.lower().endswith(".xlsx") or f.lower().endswith(".xls")):
+                continue
+            f_low = f.lower()
+            if "pp" in f_low and "2026" in f_low and ("dia" in f_low or "día" in f_low):
+                return os.path.join(carpeta, f)
+    return None
+
+
+def procesar_presupuesto_diario_2026(ruta_archivo):
+    """
+    Lee Excel PP 2026 x día: columnas FECHA, Co, CASA, DIA, PPTO DIARIO.
+    Co se cruza con StoreID_External. Retorna filas para hechos_excel_diario (Escenario Presupuesto_Diario_2026).
+    """
+    if not ruta_archivo or not os.path.isfile(ruta_archivo):
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(ruta_archivo, header=0)
+    except Exception as e:
+        print(f"[X] Error leyendo PP 2026 x día {ruta_archivo}: {e}")
+        return pd.DataFrame()
+    df.columns = [str(c).strip() for c in df.columns]
+    col_ppto = None
+    for c in df.columns:
+        if "ppto" in c.lower() and "diario" in c.lower():
+            col_ppto = c
+            break
+    if col_ppto is None or "Co" not in df.columns or "FECHA" not in df.columns:
+        print("[!] PP 2026 x día: se esperan columnas FECHA, Co y PPTO DIARIO. Encontradas:", list(df.columns))
+        return pd.DataFrame()
+    df["Fecha"] = pd.to_datetime(df["FECHA"], errors="coerce").dt.date
+    df = df.dropna(subset=["Fecha"])
+    df["StoreID_External"] = df["Co"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    df["Ventas"] = pd.to_numeric(df[col_ppto], errors="coerce").fillna(0)
+    df["Sede_Excel"] = df["CASA"].astype(str).str.strip() if "CASA" in df.columns else df["StoreID_External"]
+    df["Escenario"] = "Presupuesto_Diario_2026"
+    df["Transacciones"] = 0
+    df["Ticket_Promedio"] = 0
+    out = df[["StoreID_External", "Sede_Excel", "Fecha", "Escenario", "Ventas", "Transacciones", "Ticket_Promedio"]].copy()
+    return out
+
 def leer_archivo_robusto(ruta, header_val=0, sep_val=','):
     if not ruta: return pd.DataFrame()
     try:
@@ -183,8 +231,12 @@ def ejecutar_etl():
         
     df_hist_diarizado = diarizar_mensual(df_hist_mensual, 'Historico_Diarizado')
     df_2025_exacto = procesar_diario_2025(ruta_2025) if ruta_2025 else pd.DataFrame()
-    
-    df_final = pd.concat([df_hist_diarizado, df_pres_diarizado, df_2025_exacto], ignore_index=True)
+    ruta_pp_2026_dia = obtener_ruta_pp_2026_dia()
+    df_pp_2026_dia = procesar_presupuesto_diario_2026(ruta_pp_2026_dia) if ruta_pp_2026_dia else pd.DataFrame()
+    if not df_pp_2026_dia.empty:
+        print(f"[OK] Presupuesto diario 2026 (PP x día): {len(df_pp_2026_dia)} registros.")
+    partes = [df_hist_diarizado, df_pres_diarizado, df_2025_exacto, df_pp_2026_dia]
+    df_final = pd.concat([p for p in partes if not p.empty], ignore_index=True)
     if df_final.empty:
         return
 
@@ -210,7 +262,7 @@ def ejecutar_etl():
     df_final['Agrupacion'] = df_final.apply(asignar_grupo_final, axis=1)
 
     # Solo reemplazar los escenarios que estamos cargando; preservar Historico_Diario si vino del FTP
-    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado']
+    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026']
     if not df_2025_exacto.empty:
         escenarios_a_borrar.append('Historico_Diario')
     placeholders = ", ".join([f"'{e}'" for e in escenarios_a_borrar])

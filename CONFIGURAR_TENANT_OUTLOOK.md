@@ -48,7 +48,7 @@ Si no ves “Microsoft Entra ID” o “Información general”, es posible que 
      - Tipo: **Web**.  
      - URL:  
        - Para probar en tu PC: `http://localhost:8501/oauth2callback`  
-       - Para la app en la nube: `https://reportesandres.streamlit.app/oauth2callback`  
+       - Para la app en la nube: `https://reportesandresbi.streamlit.app/oauth2callback`  
      Puedes añadir las dos (local y nube) en el mismo registro.
 4. Clic en **Registrar**.
 
@@ -73,7 +73,7 @@ Si no ves “Microsoft Entra ID” o “Información general”, es posible que 
 2. En **Configuración de la plataforma** → **Web** debe aparecer la URI. Si no:
    - **Agregar URI** y pega:
      - `http://localhost:8501/oauth2callback` (local)
-     - `https://reportesandres.streamlit.app/oauth2callback` (nube)
+     - `https://reportesandresbi.streamlit.app/oauth2callback` (nube)
 3. En **Configuración avanzada** suele estar bien dejar “Sí” en **Permitir flujo de cliente público** según la plantilla de Streamlit (si Azure te lo pide).
 4. **Guardar**.
 
@@ -120,7 +120,7 @@ Para **probar en local:** deja `redirect_uri = "http://localhost:8501/oauth2call
 
 Para **usar en la nube (reportesandres.streamlit.app):**
 - En Streamlit Cloud → tu app → **Settings** → **Secrets**, pega el mismo bloque pero con:
-  - `redirect_uri = "https://reportesandres.streamlit.app/oauth2callback"`
+  - `redirect_uri = "https://reportesandresbi.streamlit.app/oauth2callback"`
 - Y en Azure → **Autenticación** debe estar añadida esa misma URI en “Web”.
 
 ---
@@ -142,6 +142,6 @@ Para **usar en la nube (reportesandres.streamlit.app):**
 | **client_id**        | Registros de aplicaciones → tu app → Id. de aplicación (cliente). |
 | **client_secret**    | Tu app → Certificados y secretos → Nuevo secreto → copiar Valor. |
 | **server_metadata_url** | `https://login.microsoftonline.com/<TENANT_ID>/v2.0/.well-known/openid-configuration` |
-| **redirect_uri**     | Local: `http://localhost:8501/oauth2callback`. Nube: `https://reportesandres.streamlit.app/oauth2callback`. |
+| **redirect_uri**     | Local: `http://localhost:8501/oauth2callback`. Nube: `https://reportesandresbi.streamlit.app/oauth2callback`. |
 
 Si algo falla (por ejemplo “redirect_uri no coincide”), revisa que la URI en `.streamlit/secrets.toml` sea **exactamente** la misma que en Azure → Autenticación → Web.

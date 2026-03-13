@@ -53,6 +53,10 @@
 | **requirements.txt** | `streamlit>=1.52.2`, `Authlib>=1.3.2`, `requests`, pandas, sqlalchemy, passlib[bcrypt], etc. |
 | **runtime.txt** | `python-3.11.9` (Cloud). |
 | **check_transacciones.py** | Script de diagnóstico: por qué no salen transacciones (lee solo SQLite, no modifica la app). |
+| **ejecutar_etls.py** | Ejecuta en orden: etl_maestros, etl_sql, etl_excel. Para uso manual o programado (6:00 / 8:00). |
+| **ejecutar_etls_6y8.bat** | Lanza `ejecutar_etls.py` (activa venv si existe). Lo usa el Programador de tareas. |
+| **programar_tareas_etl.ps1** | Crea en Windows dos tareas: BI_Andres_ETL_6am (6:00) y BI_Andres_ETL_8am (8:00). |
+| **push_db_to_github.py** | Tras los ETLs, hace commit y push de bi_local_data.db a GitHub para que la web use datos actualizados. |
 
 ---
 
@@ -101,6 +105,27 @@
 
 ---
 
+## 7b. Actualización automática (ETLs a las 6:00 y 8:00)
+
+**Resumen:** Es automático. Tú solo haces la configuración **una vez (hoy)**. Luego, **todos los días** no tienes que hacer nada: si la PC está encendida a las 6:00 y 8:00, todo corre solo (ETLs + subida a GitHub → la web se actualiza).
+
+| | Qué hacer |
+|--|-----------|
+| **Hoy (una sola vez)** | 1) Ejecutar `.\programar_tareas_etl.ps1` en PowerShell (crea las tareas de las 6 y 8). 2) Dejar Git listo para push sin contraseña (token o SSH), si quieres que la web se actualice con la base. |
+| **Todos los días** | Nada. Las tareas se ejecutan solas a las 6:00 y 8:00. Solo conviene que la PC esté encendida a esas horas (p. ej. no apagarla de noche si quieres que corra). |
+
+- **Objetivo:** Que los datos se actualicen solos mientras el equipo está encendido (p. ej. por la noche), sin abrir la app.
+- **Qué se ejecuta:** `ejecutar_etls.py` corre en orden: Maestros (dim_store, Invoice) → Ventas SQL → Excel (presupuesto/histórico).
+- **Cómo programar (una vez):** En la carpeta del proyecto, abrir PowerShell y ejecutar:
+  ```powershell
+  .\programar_tareas_etl.ps1
+  ```
+  Eso crea dos tareas en el Programador de tareas de Windows: **BI_Andres_ETL_6am** (6:00) y **BI_Andres_ETL_8am** (8:00), todos los días.
+- **Requisitos:** La PC debe estar encendida a esas horas; `.env` con credenciales de SQL Server y rutas correctas; `python` en el PATH (o venv activado por el .bat). Para ver/editar tareas: Panel de control → Herramientas administrativas → Programador de tareas.
+- **Actualización automática para la web:** Después de cada ejecución (6:00 y 8:00), el mismo .bat lanza `push_db_to_github.py`, que hace commit y push de `bi_local_data.db` al repo. Así Streamlit Cloud recibe el archivo actualizado en el próximo deploy y la web muestra los mismos datos que local. Para que el push funcione sin intervención: Git en el PATH, remote `origin` apuntando a GitHub, y **permisos de push** (Personal Access Token en HTTPS o SSH). Si no quieres subir la base a GitHub, pon `PUSH_DB_TO_GITHUB=0` en el entorno o en un .env que el .bat cargue. **Importante:** Si el repo es público, la base quedará visible; valora usar repo privado o no subir la DB.
+
+---
+
 ## 8. Documentación adicional
 
 - **MEMORIA_PROYECTO.md** — Reglas para la IA, diccionario de archivos, mapeos, protocolo de blindaje.
@@ -113,10 +138,11 @@
 ## Última actualización
 
 - **Fecha:** 2026-03-12  
-- **Cambios recientes:** Login Microsoft local + web (OAuth Authlib en Cloud). Backup app_backup_actual.py. Docs PASO_A_PASO_LOGIN_*.md. — FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app.
+- **Cambios recientes:** Login Microsoft local + web (OAuth Authlib en Cloud). Backup app_backup_actual.py. Docs PASO_A_PASO_LOGIN_*.md. — FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app. **Actualización automática:** `ejecutar_etls.py`, `ejecutar_etls_6y8.bat` y `programar_tareas_etl.ps1` para ETLs a las 6:00 y 8:00 (sección 7b).
 
 **Al hacer cambios relevantes:** editar la sección que corresponda arriba y añadir una línea aquí, por ejemplo:  
 `- YYYY-MM-DD: [descripción breve del cambio].`
+
 
 ---
 

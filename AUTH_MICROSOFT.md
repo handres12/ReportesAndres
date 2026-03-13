@@ -20,7 +20,7 @@ Si configuras la autenticación con Microsoft, **solo** quienes tengan una cuent
    - Personales: “Cuentas personales de Microsoft”.
 5. **URI de redirección:** plataforma **Web** y una de estas URLs:
    - Local: `http://localhost:8501/oauth2callback`
-   - En la nube: `https://reportesandres.streamlit.app/oauth2callback` (usa la URL real de tu app).
+   - En la nube: `https://reportesandresbi.streamlit.app/oauth2callback` (usa la URL real de tu app).
 6. **Registrar**. En la página de la app:
    - Copia **Id. de aplicación (cliente)** → será `client_id`.
    - **Certificados y secretos** → **Nuevo secreto de cliente** → copia el **Valor** → será `client_secret` (solo se muestra una vez).
@@ -53,9 +53,27 @@ server_metadata_url = "https://login.microsoftonline.com/TU_TENANT_ID/v2.0/.well
 
 - **En local:** `redirect_uri` con `http://localhost:8501/oauth2callback`.
 - **En Streamlit Cloud:** en la configuración de la app → **Secrets**, pega el mismo bloque pero con:
-  - `redirect_uri = "https://reportesandres.streamlit.app/oauth2callback"` (tu URL real).
+  - `redirect_uri = "https://reportesandresbi.streamlit.app/oauth2callback"` (tu URL real).
+- **Importante:** la URI debe terminar en **`/oauth2callback`**; si usas solo la raíz (`/`) el login no funcionará.
 - **cookie_secret:** genera una cadena aleatoria larga (por ejemplo con un generador de contraseñas).
 - En Azure, en **Autenticación** de la app, añade también la URI de redirección de producción (`https://...streamlit.app/oauth2callback`).
+
+### Si no funciona: formato nombrado (Microsoft)
+
+En **Secrets** (local o Cloud) puedes usar el formato con proveedor nombrado. La app lo detecta y usará `st.login("microsoft")`:
+
+```toml
+[auth]
+redirect_uri = "https://reportesandresbi.streamlit.app/oauth2callback"
+cookie_secret = "tu-cookie-secret"
+
+[auth.microsoft]
+client_id = "tu-client-id"
+client_secret = "tu-client-secret"
+server_metadata_url = "https://login.microsoftonline.com/TU_TENANT_ID/v2.0/.well-known/openid-configuration"
+```
+
+En la pantalla de login, abre **«¿No funciona el login? Ver diagnóstico»** para ver si `st.user`/`st.login` están disponibles y si `redirect_uri` termina en `oauth2callback`.
 
 ## Resumen
 

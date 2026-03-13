@@ -827,6 +827,13 @@ def _main_impl():
     ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
 
     st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Refrescar datos", help="Tras ejecutar el ETL, pulsa aquí para cargar ventas y presupuesto de nuevo (evita caché)."):
+        try:
+            load_ventas_operativas.clear()
+            load_financiero_excel.clear()
+        except Exception:
+            pass
+        st.rerun()
     alinear = _sidebar_toggle("Lunes vs Lunes (comparativo 2025)", value=True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
@@ -841,8 +848,9 @@ def _main_impl():
 
     # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
     df_r = df_op[(df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)].copy()
+    # Siempre crear la columna Venta_Real (aunque el DataFrame esté vacío) para evitar KeyError en la nube
+    df_r['Venta_Real'] = df_r['VlrBruto'] - df_r['VlrTotalDesc'].abs()
     if not df_r.empty:
-        df_r['Venta_Real'] = df_r['VlrBruto'] - df_r['VlrTotalDesc'].abs()
         df_r['Sede_Nom'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
@@ -858,8 +866,12 @@ def _main_impl():
     else:
         df_h = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Transacciones', 'Sede_Nom', 'Grupo'])
 
-    df_p_raw = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')].copy()
+    # Presupuesto diario: solo pestaña 3 usa PP 2026 x día (Presupuesto_Diario_2026) si existe; si no, Presupuesto_Diarizado
+    df_p_raw_pp_dia = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')].copy()
+    df_p_raw_ppto_diar = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diarizado')].copy()
+    df_p_raw = df_p_raw_pp_dia if not df_p_raw_pp_dia.empty else df_p_raw_ppto_diar
     if not df_p_raw.empty:
+        df_p_raw = df_p_raw.copy()
         df_p_raw['Sede_Nom'] = df_p_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
         df_p_raw['Grupo'] = df_p_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_p_raw = df_p_raw[df_p_raw['Sede_Nom'].isin(s_filtro) & df_p_raw['Grupo'].isin(g_filtro)]
@@ -1059,6 +1071,7 @@ def _main_impl():
                 rows_show.append({'GRUPO': f['Grupo'], 'RESTAURANTE': rest_label, 'PRESUPUESTO DIARIO 2026': f_moneda(f['ppto']), 'VENTAS AL PÚBLICO 2026': f_moneda(f['venta']), 'VARIACIÓN': var_str})
             df_show3 = pd.DataFrame(rows_show)
             _st_dataframe(_estilo_tabla_informe(df_show3), hide_index=True)
+            st.caption("Si un restaurante muestra **$0 en ventas**, puede que no haya datos de venta para esa fecha en la base operativa (ejecuta el ETL y pulsa «Refrescar datos» en el menú).")
         else:
             st.info("Sin datos para presupuesto o ventas al público del día.")
 
