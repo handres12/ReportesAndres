@@ -597,12 +597,51 @@ def load_transacciones_hist_2025():
         return pd.DataFrame()
 
     df.columns = _norm_cols(df.columns)
-    col_co = _detectar_columna(df, ["Co", "CentroOP", "Centro", "Codigo", "StoreID_External", "StoreID", "Sede", "Tienda", "CentroOP"])
+    col_co = _detectar_columna(df, ["Co", "CentroOP", "Centro", "Codigo", "StoreID_External", "StoreID", "Sede", "Tienda"])
+    col_mes = _detectar_columna(df, ["Mes", "Month", "MES"])
+    col_2025 = None
+    for c in df.columns:
+        if str(c).strip() == "2025":
+            col_2025 = c
+            break
     col_fecha = _detectar_columna(df, ["Fecha", "FechaDocto", "Date", "FechaVenta", "Dia", "Business Date", "BusinessDate"])
     col_tx = _detectar_columna(df, [
         "Transacciones", "Cantidad_Transacciones", "Cantidad", "CantTransacciones",
         "Num Transacciones", "NumeroTransacciones", "Tickets", "Invoices", "Sales Count", "SalesCount"
     ])
+
+    # Formato A: Co, Mes, columna 2025 (transacciones mensuales por año) -> diarizar
+    MESES_NUM = {
+        "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+        "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+    }
+    if col_co and col_mes and col_2025 is not None:
+        codigo_norm = (
+            df[col_co].astype(str).str.strip().str.upper().str.replace(r"\.0$", "", regex=True).str.lstrip("0")
+        )
+        df["_co"] = codigo_norm
+        df["_mes_str"] = df[col_mes].astype(str).str.strip().str.lower()
+        df["_tx"] = pd.to_numeric(df[col_2025], errors="coerce").fillna(0)
+        df = df[(df["_co"] != "") & (~df["_co"].str.upper().str.contains("NAN", na=True))]
+        filas = []
+        for _, row in df.iterrows():
+            mes_num = MESES_NUM.get(row["_mes_str"])
+            if mes_num is None:
+                continue
+            _, dias_mes = calendar.monthrange(2025, mes_num)
+            tx_dia = row["_tx"] / dias_mes if dias_mes else 0
+            for dia in range(1, dias_mes + 1):
+                filas.append({
+                    "codigo_sede_crudo": row["_co"],
+                    "Fecha": date(2025, mes_num, dia),
+                    "Transacciones": tx_dia,
+                })
+        if filas:
+            out = pd.DataFrame(filas)
+            agg = out.groupby(["codigo_sede_crudo", "Fecha"], as_index=False)["Transacciones"].sum()
+            agg["codigo_sede_crudo"] = agg["codigo_sede_crudo"].astype(str).str.strip()
+            return agg
+    # Formato B: Co, Fecha, Transacciones (datos diarios)
     if not col_co or not col_fecha or not col_tx:
         return pd.DataFrame()
 
@@ -619,7 +658,6 @@ def load_transacciones_hist_2025():
     out["Fecha"] = fechas.dt.date
     out["Transacciones"] = pd.to_numeric(df[col_tx], errors="coerce").fillna(0)
     out = out.dropna(subset=["Fecha"])
-    # Quitar filas con código vacío o nan
     out = out[out["codigo_sede_crudo"].astype(str).str.strip() != ""]
     out = out[~out["codigo_sede_crudo"].astype(str).str.upper().str.contains("NAN", na=True)]
     out = out[out["Fecha"].apply(lambda d: getattr(d, "year", None) == 2025)]
