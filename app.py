@@ -124,12 +124,23 @@ def _sidebar_toggle(label, value=True):
         return st.sidebar.checkbox(label, value=value)
 
 def _st_dataframe(df, hide_index=False, **kwargs):
-    # width="stretch" reemplaza use_container_width=True (deprecado 2025)
-    opts = {k: v for k, v in kwargs.items() if k != "use_container_width"}
+    # Recuadro más alto = menos barra para bajar; ancho mínimo en GRUPO/RESTAURANTE para que no se corte el texto
+    opts = {k: v for k, v in kwargs.items() if k not in ("use_container_width", "height", "column_config")}
+    if "height" not in kwargs:
+        opts["height"] = 560  # más filas visibles, menos desplazamiento
+    if "column_config" not in kwargs and df is not None:
+        try:
+            cols = getattr(df, "data", df).columns if hasattr(getattr(df, "data", df), "columns") else getattr(df, "columns", [])
+            # Ancho mínimo para GRUPO y RESTAURANTE para que no se corte (PARADERO FR, AEROPUERTO, ANDRES VIAJERO, etc.)
+            min_ancho_texto = 140
+            opts["column_config"] = {c: st.column_config.Column(width=min_ancho_texto) for c in cols if c in ("GRUPO", "RESTAURANTE")}
+        except Exception:
+            pass
     try:
-        st.dataframe(df, width="stretch", hide_index=hide_index, **opts)
+        st.dataframe(df, width="content", hide_index=hide_index, **opts)
     except (TypeError, AttributeError):
-        st.dataframe(df, width="stretch", hide_index=hide_index)
+        opts_plain = {k: v for k, v in opts.items() if k in ("height",)}
+        st.dataframe(df, width="stretch", hide_index=hide_index, **opts_plain)
 
 def _dataframe_serializable(df):
     """Evita LargeUtf8 en frontend: solo columnas texto a tipo serializable. No cambia valores ni aspecto."""
@@ -342,19 +353,26 @@ BRAND_CSS = """
     box-shadow: none !important;
   }
 
-  /* Tablas: estilo reporte (cabecera gris, bordes, agrupación) */
+  /* Tablas: ancho de celda al contenido (sin espacio en blanco extra); recuadro más alto = menos scroll */
   .dataframe thead tr th {
     background: #3d4554 !important;
     color: #fff !important; font-weight: 700 !important;
-    padding: 12px 14px !important; font-size: 1rem !important;
+    padding: 6px 10px !important; font-size: 1.0625rem !important;
     border: 1px solid #2f3644 !important;
+    white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important;
   }
   .dataframe tbody tr:hover { background: var(--acr-cream-dark) !important; }
   .dataframe tbody tr:nth-child(even) { background: #faf9f7 !important; }
   .dataframe tbody td {
-    font-size: 1rem !important; color: var(--text-primary) !important;
-    padding: 10px 14px !important; border: 1px solid #e0e2e6 !important;
+    font-size: 1.0625rem !important; color: var(--text-primary) !important;
+    padding: 6px 10px !important; border: 1px solid #e0e2e6 !important;
+    white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important;
   }
+  /* Celdas al ancho del contenido; ancho mínimo para que el texto no se corte (PARADERO, AEROPUERTO, etc.) */
+  .dataframe table { table-layout: auto !important; width: auto !important; }
+  .dataframe th, .dataframe td { box-sizing: border-box !important; min-width: min-content !important; overflow: visible !important; }
+  /* Recuadro más alto hacia abajo para ver más filas sin bajar la barra; scroll horizontal si hace falta para no cortar texto */
+  div[data-testid="stDataFrame"] > div { max-height: 75vh !important; min-height: 420px !important; overflow-x: auto !important; overflow-y: auto !important; }
   div[data-testid="stHorizontalBlock"] { align-items: stretch !important; }
   div[data-testid="stHorizontalBlock"] > div { align-items: stretch !important; min-width: 0; overflow: visible !important; }
   div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) { flex: 1 1 auto !important; min-width: 14rem !important; }
@@ -1117,6 +1135,11 @@ def _main_impl():
 
     with tab1:
         st.markdown(f'<p class="section-title">{titulo_fecha}</p>', unsafe_allow_html=True)
+        # Aviso: hasta qué fecha hay datos (las ventas vienen de SQL Server → ETL → SQLite)
+        fecha_max = df_op['Fecha'].max()
+        if hasattr(fecha_max, 'date'):
+            fecha_max = fecha_max.date()
+        st.caption(f"Datos de ventas disponibles **hasta el {fecha_max.strftime('%d/%m/%Y')}**. Si el día que buscas es más reciente, la base principal (SQL Server, tabla Detalle) aún no tiene esa fecha cargada; cuando esté disponible, ejecuta de nuevo los ETLs (**ejecutar_etls.py**).")
         if df_r.empty:
             st.info("No hay ventas al público para el día seleccionado.")
         else:

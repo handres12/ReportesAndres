@@ -1,7 +1,12 @@
 import pandas as pd
+from datetime import date, timedelta
 from sqlalchemy import text, func
 from database import engine_sql_server_sec, engine_local, SessionLocalDB
 from models import DimStore, DimItemGroup, DimItemFamily, DimMenuItem, RawInvoice2026
+
+# Re-traer siempre los últimos N días de Invoice para que "ayer" no quede incompleto
+INVOICE_RELOAD_DAYS = 2
+INICIO_2026 = date(2026, 1, 1)
 
 def extraer_maestros():
     print("Iniciando extracción desde base de datos secundaria (NEWACRVentas)...\n")
@@ -49,9 +54,11 @@ def extraer_maestros():
             print("No se encontraron Invoices previos. Se hará carga inicial desde 2026-01-01.")
             fecha_inicio_inv = '2026-01-01'
         else:
-            fecha_inicio_inv = max_fecha_inv.strftime('%Y-%m-%d')
-            print(f"Última fecha de Invoice detectada: {fecha_inicio_inv}. Iniciando carga incremental...")
-            # Borrar el último día por seguridad
+            # Re-traer últimos N días para que "ayer" no quede con transacciones incompletas
+            max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, 'date') else max_fecha_inv
+            desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
+            fecha_inicio_inv = max(desde, INICIO_2026).strftime('%Y-%m-%d')
+            print(f"Última fecha de Invoice: {max_date}. Re-cargando desde {fecha_inicio_inv} (últimos {INVOICE_RELOAD_DAYS} días)...")
             session.execute(text(f"DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
             session.commit()
 

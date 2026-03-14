@@ -16,11 +16,12 @@
 ## 2. Estructura de la app (app.py)
 
 - **Entrada:** Si no hay sesión → pantalla de login (Microsoft **o** usuario/contraseña según configuración). Si hay sesión → informe.
-- **Informe:** 4 pestañas:
+- **Informe:** 5 pestañas:
   1. Ventas al público del día (por sede, con transacciones y ticket).
   2. Comparativo 2026 vs 2025 (Lunes vs Lunes opcional).
   3. Presupuesto diario vs ventas al público.
   4. Presupuesto acumulado vs ventas al público.
+  5. Transacciones 2026 vs 2025.
 - **Filtros (sidebar):** Rango de fechas (Desde/Hasta), Restaurantes, Grupos, “Ocultar sedes sin venta real”, toggle “Lunes vs Lunes (comparativo 2025)”.
 - **Helpers importantes:** `get_engine()` (SQLite: si existe `LOCAL_DB_URL` en .env se usa; si no, en Cloud se arma la ruta con `__file__` y `bi_local_data.db`, con `check_same_thread=False`), `load_ventas_operativas()` (ventas + transacciones vía Invoice→Store→StoreID_External=Co), `load_financiero_excel()`, `load_mapeo_sedes()`, `_dataframe_serializable()` (evita LargeUtf8), `_st_dataframe()` y `_sidebar_toggle()` (compatibilidad Cloud), `_estilo_tabla_informe()` (estilo tablas).
 
@@ -54,9 +55,12 @@
 | **runtime.txt** | `python-3.11.9` (Cloud). |
 | **check_transacciones.py** | Script de diagnóstico: por qué no salen transacciones (lee solo SQLite, no modifica la app). |
 | **ejecutar_etls.py** | Ejecuta en orden: etl_maestros, etl_sql, etl_excel. Para uso manual o programado (6:00 / 8:00). |
+| **run_pipeline_diario.py** | **Una sola sentencia:** ETLs → (opcional) FTP 2025 → push a GitHub. Recomendado para actualizar todo cada día. |
+| **cargar_todo.bat** | Ejecuta `python run_pipeline_diario.py`; doble clic para correr el pipeline sin escribir comandos. |
 | **ejecutar_etls_6y8.bat** | Lanza `ejecutar_etls.py` (activa venv si existe). Lo usa el Programador de tareas. |
 | **programar_tareas_etl.ps1** | Crea en Windows dos tareas: BI_Andres_ETL_6am (6:00) y BI_Andres_ETL_8am (8:00). |
 | **push_db_to_github.py** | Tras los ETLs, hace commit y push de bi_local_data.db a GitHub para que la web use datos actualizados. |
+| **PIPELINE_DATOS.md** | Flujo de datos, orden de ETLs, qué no mover, cómo blindar. Ver también MEMORIA_PROYECTO.md §5 y §7. |
 
 ---
 
@@ -85,6 +89,7 @@
 - **Tab 2 (Comparativo 2026 vs 2025):** `df_op` (2026) y histórico 2025 (`df_h`) con fechas alineadas (Lunes vs Lunes) o mismo día; variación y semáforos.
 - **Tab 3 (Ppto diario):** presupuesto diario vs ventas del día en el rango; `df_r` / `df_p` por sede.
 - **Tab 4 (Ppto acumulado):** presupuesto acumulado vs ventas acumuladas hasta `f_fin`; `df_r_acum` / `df_p_acum`; título con “MES DE MARZO” (o el mes de f_fin).
+- **Tab 5 (Transacciones 2026 vs 2025):** 2026 desde `df_op` (Cantidad_Transacciones por sede/fecha); 2025 desde `load_transacciones_hist_2025()` (archivo `transacciones_hist*.xlsx`, diarizado). Mismo alineamiento de fechas que el comparativo de ventas. No modificar esta lógica al agregar otros análisis.
 - Todas las tablas que se muestran pasan por `_estilo_tabla_informe()` y por `_dataframe_serializable()` (vía `_st_dataframe`). No mostrar un DataFrame sin pasar por eso o puede reaparecer el error LargeUtf8 en Cloud.
 
 ---

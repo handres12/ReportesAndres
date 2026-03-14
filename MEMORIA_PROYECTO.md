@@ -2,8 +2,8 @@
 
 **Para entrar en contexto rápido (IA o humano):** leer primero **`CONTEXTO_PROYECTO_IA.md`**.
 
-**Última actualización:** 2026-03-12 (login Microsoft local + web; backup app_backup_actual.py)  
-**Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel) usando una base de datos local SQLite (bi_local_data.db).
+**Última actualización:** 2026-03-14 (pipeline diario, una sentencia, memoria ampliada)  
+**Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel/FTP) usando una base de datos local SQLite (bi_local_data.db).
 
 ## 1. REGLAS ESTRICTAS PARA LA IA
 1. CERO RESPUESTAS RÁPIDAS O RESÚMENES DE CÓDIGO. Cero "poesía". Respuestas directas y técnicas.
@@ -12,18 +12,30 @@
 4. NUNCA convertir códigos alfanuméricos de Micros (ej. F08) a enteros. Usar siempre `LTRIM(UPPER(TRIM(codigo)), '0')` para los cruces (JOINs).
 
 ## 2. DICCIONARIO DE ARCHIVOS (ARQUITECTURA)
-* **`.env`**: Variables de entorno (Credenciales SQL Server y SQLite local).
-* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Login (Microsoft en local y web con Authlib en Cloud), cruce y visualización de datos.
-* **`auth.py`**: Login usuario/contraseña (tabla `usuarios`, bcrypt). Se usa si no hay [auth] Microsoft.
-* **`app_backup_actual.py`**: Copia de seguridad de app.py. Actualizado 2026-03-12.
-* **`bi_local_data.db`**: Base de datos SQLite principal. Convergen todos los ETLs.
-* **`database.py`**: Conexiones SQLAlchemy a SQL Server y SQLite.
-* **`models.py`**: Estructura de tablas locales (ej. `RawVentas2026`).
+* **`.env`**: Variables de entorno (credenciales SQL Server, SQLite, FTP).
+* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). **Login con Microsoft:** si en `.streamlit/secrets.toml` está `[auth]` con `client_id` y `client_secret`, la app muestra solo "Iniciar sesión con Microsoft" (Authlib/OAuth; cuentas válidas de Azure). Detalle en **CONTEXTO_PROYECTO_IA.md** §3 y **AUTH_MICROSOFT.md**. Si no hay [auth], se usa login usuario/contraseña. 5 pestañas: ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, **transacciones 2026 vs 2025**.
+* **`auth.py`**: Login usuario/contraseña (tabla `usuarios`, bcrypt). Se usa cuando no hay [auth] Microsoft.
+* **`app_backup_actual.py`**: Copia de seguridad de app.py. Actualizar antes de cambios grandes.
+* **`bi_local_data.db`**: Base de datos SQLite principal. Convergen todos los ETLs; se sube a GitHub para la web (Streamlit Cloud).
+* **`database.py`**: Conexiones SQLAlchemy: SQL Server principal, NEWACRVentas (secundaria), SQLite local.
+* **`models.py`**: Estructura de tablas locales (RawVentas2026, RawInvoice2026, dim_store, hechos_excel_diario, etc.).
 * **`init_db.py`**: Crea las tablas vacías en SQLite si no existen.
-* **`etl_sql.py`**: Extrae ventas operativas (Micros) a `raw_ventas_2026`.
-* **`etl_excel.py`**: Extrae presupuestos/históricos a `hechos_excel_diario`.
-* **`etl_maestros.py`**: Puebla `dim_store`.
-* **`validador_ventas.py`**: Script de diagnóstico para confirmar datos en SQLite.
+* **`etl_sql.py`**: Extrae ventas (tabla Detalle, base principal) → `raw_ventas_2026`. Carga completa año 2026.
+* **`etl_maestros.py`**: NEWACRVentas → `dim_store`, `dim_item_*`, `raw_invoice_2026`. Invoice: carga incremental; re-trae últimos 2 días para evitar "ayer" con transacciones incompletas.
+* **`etl_excel.py`**: Excel en `fuentes_excel`/raíz → presupuesto e histórico → `hechos_excel_diario` (no borra escenario Historico_Diario; ese lo carga el FTP).
+* **`ejecutar_etls.py`**: Orden fijo: 1) etl_maestros, 2) etl_sql, 3) etl_excel. Para Programador de tareas (ej. 6:00 y 8:00).
+* **`run_pipeline_diario.py`**: Una sola sentencia: ejecuta ETLs → (opcional) FTP 2025 → push a GitHub. Script recomendado para actualizar todo cada día.
+* **`cargar_todo.bat`**: Ejecuta `python run_pipeline_diario.py`; doble clic para correr el pipeline sin abrir terminal.
+* **`actualizar_8am.bat`**: Para Programador de tareas: ejecuta `run_pipeline_diario.py` sin pause (asume SQL al día a las 8:00). Usado por `programar_actualizacion_8am.ps1`.
+* **`programar_actualizacion_8am.ps1`**: Crea una sola tarea diaria **BI_Andres_Actualizacion_8am** a las 08:15. Recomendado cuando las tablas SQL están al día a las 8:00.
+* **`programar_tres_actualizaciones.ps1`**: Crea tres tareas diarias: **6:30**, **8:00** y **10:00**. Cada una ejecuta el pipeline completo (local y web actualizados tres veces al día).
+* **`listar_ftp_ventas_2025.py`**: Lista/descarga FTP "Ventas por items 2025". Con `--cargar` reemplaza en BD el escenario Historico_Diario (comparativo 2025 día a día, PLAZAS).
+* **`etl_ftp_ventas_2025.py`**: Alternativa para cargar histórico 2025 desde FTP.
+* **`push_db_to_github.py`**: Hace commit y push de `bi_local_data.db` a GitHub para que la web use datos actualizados. Respeta `PUSH_DB_TO_GITHUB=0` para desactivar.
+* **`PIPELINE_DATOS.md`**: Documentación del flujo de datos: fuentes, orden de ETLs, qué no mover, cómo blindar y agregar análisis sin romper lo existente.
+* **`ACTUALIZACION_EN_LA_NUBE.md`**: Opciones para que la actualización no dependa del PC (VM en Azure, Functions, GitHub Actions); recomendación y pasos mínimos para una VM.
+* **`validador_ventas.py`**: Diagnóstico: confirmar datos de ventas en SQLite.
+* **`check_transacciones.py`**: Diagnóstico: por qué no salen transacciones (JOIN Invoice–Store, etc.).
 
 ## 3. ARQUITECTURA DE DATOS Y RELACIONES (DIAGRAMA)
 Las bases de datos se dividen en dos orígenes que convergen en SQLite. El cruce principal SIEMPRE debe hacerse a través de `dim_store`, conectando el `StoreID` (interno de Micros) con el `StoreID_External` (código de negocio).
@@ -73,6 +85,8 @@ Finanzas (Excel): hechos_excel_diario.StoreID_External = dim_store.StoreID_Exter
 
 Regla de Limpieza: Para cruzar hechos_excel_diario con dim_store, SIEMPRE aplicar: LTRIM(UPPER(TRIM(CAST(columna AS TEXT))), '0') para evitar discrepancias entre "002" y "2", o fallos con letras como "F08".
 
+**Pestaña 5 – Comparativo Transacciones 2026 vs 2025:** 2026 desde `df_op` (Cantidad_Transacciones por sede/fecha, ya en load_ventas_operativas). 2025 desde archivo local `transacciones_hist*.xlsx` (formato Co + Mes + 2025), cargado con `load_transacciones_hist_2025()` y diarizado; mismo alineamiento de fechas (Lunes vs Lunes o mismo día) que el comparativo de ventas. No modificar la lógica de esta pestaña al agregar otros análisis.
+
 4. DICCIONARIOS DE MAPEO (CRÍTICO)
 El ETL depende de este mapeo manual inyectado en etl_excel.py para evitar el error "SIN GRUPO".
 
@@ -86,6 +100,16 @@ PARADERO: AEROPUERTO (301), ANDRES VIAJERO (304), RIONEGRO (305).
 
 EXPRÉS: CAFAM (611), CALLE 93 (502), CASA DE LOS ANDES (612), EXPRÉS PARADERO (004), MULTIPARQUE (702), PALATINO (604), PEPE SIERRA (615).
 
+## 5. PIPELINE Y ACTUALIZACIÓN DIARIA
+
+**Una sola sentencia para cargar todo a pasos (cada día):**
+```bash
+python run_pipeline_diario.py
+```
+O doble clic en **`cargar_todo.bat`**.
+
+**Asunción:** Las tablas SQL (Detalle, NEWACRVentas) están al día a las **8:00**. Por tanto conviene **una ejecución diaria después de las 8:00** (ej. 8:15). **Orden interno del pipeline:** (1) ETLs (`ejecutar_etls.py`: maestros → ventas SQL → Excel), (2) opcional FTP 2025 (`listar_ftp_ventas_2025.py --cargar`), (3) subida a GitHub (`push_db_to_github.py`). Prerrequisitos: SQL Server con datos; archivos Excel en `fuentes_excel`/raíz sin mover. Detalle completo y diagramas en **`PIPELINE_DATOS.md`**. **Programar una vez:** `.\programar_actualizacion_8am.ps1` crea la tarea BI_Andres_Actualizacion_8am a las 08:15 (ejecuta `actualizar_8am.bat` → `run_pipeline_diario.py`).
+
 ## 6. PROTOCOLO DE BLINDAJE (QUÉ HACER SI HAY CEROS)
 1. **¿Venta Diaria en $0?** - Corre `python validador_ventas.py`. 
    - Si sale vacía, el problema es el `etl_sql.py` (conexión SQL Server principal).
@@ -98,3 +122,13 @@ EXPRÉS: CAFAM (611), CALLE 93 (502), CASA DE LOS ANDES (612), EXPRÉS PARADERO 
 4. **¿Los datos no coinciden con Excel?**
    - Verifica la fecha en el Sidebar. 
    - Asegúrate de que el toggle "Alinear Lunes vs Lunes" esté en la posición correcta.
+5. **¿Transacciones o ticket de "ayer" salen en 0 o muy raros (solo una sede)?**
+   - Las ventas vienen de Detalle (SQL); las transacciones de Invoice (NEWACRVentas). Si "ayer" se cargó incompleto en NEWACRVentas, el ETL ya re-trae los últimos 2 días de Invoice. Vuelve a ejecutar `python run_pipeline_diario.py` (o `python etl_maestros.py`). Si sigue mal, revisar en NEWACRVentas que ese día tenga todos los Invoice cargados.
+
+## 7. CONTINUIDAD DEL PROYECTO (BLINDAJE AL AGREGAR ANÁLISIS)
+
+**Cómo se blinda la información hoy para que cada cambio no genere modificaciones:**
+
+1. **Lo que no se toca:** Rutas y nombres de los Excel en `fuentes_excel`/raíz. Nombres de tablas y columnas que usa la app (`raw_ventas_2026`, `raw_invoice_2026`, `dim_store`, `hechos_excel_diario`). Orden de los ETLs (maestros → ventas SQL → Excel). Lógica y fuentes de datos de las pestañas 1–5 (ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025).
+2. **Regla al agregar análisis:** (A) **Nuevas pestañas** que solo **leen** las tablas ya existentes, sin modificar consultas ni código de las pestañas 1–5. (B) Si hace falta datos nuevos: **tablas nuevas** + **ETL nuevo** que las llene; en la app solo se agrega una pestaña que lee esas tablas. Así cada cambio queda individualizado y no rompe lo construido.
+3. **Documento de referencia:** **`PIPELINE_DATOS.md`** describe el flujo completo, qué hace cada ETL, qué no mover y cómo blindar. Antes de cambios grandes en `app.py`, copiar a `app_backup_actual.py`.
