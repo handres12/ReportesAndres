@@ -544,15 +544,20 @@ def load_ventas_operativas():
             df = pd.read_sql(text(query), con=conn)
         if not df.empty:
             df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
-            # Unificar códigos con MAPEO_SEDES: 201.0 / 0201 -> 201 (por si la BD tiene formato antiguo)
+            # Unificar códigos con MAPEO_SEDES: 201.0 / 0201 -> 201; nombres de sede -> código (Medellín, Plaza Claro, Cafam)
             def _norm_codigo(c):
                 c = str(c).strip().upper().lstrip('0') or '0'
                 try:
-                    return str(int(float(c)))
+                    c = str(int(float(c)))
                 except (ValueError, TypeError):
-                    return c
+                    pass
+                ALIAS_A_CODIGO = {"MEDELLIN": "201", "MEDELLÍN": "201", "PLAZA CLARO": "F04", "PLAZACLARO": "F04", "CAFAM": "611"}
+                k = c.replace("  ", " ")
+                for old, new in [("Í", "I"), ("É", "E"), ("Á", "A"), ("Ó", "O"), ("Ú", "U"), ("Ñ", "N")]:
+                    k = k.replace(old, new)
+                return ALIAS_A_CODIGO.get(k, c)
             df['codigo_sede_crudo'] = df['codigo_sede_crudo'].astype(str).str.strip().apply(_norm_codigo)
-            # Reagrupar por si había 201 y 201.0 como grupos distintos
+            # Reagrupar por si había 201 y 201.0 (o nombre y código) como grupos distintos
             agg_cols = {'VlrBruto': 'sum', 'VlrTotalDesc': 'sum', 'Cantidad_Transacciones': 'sum', 'Store_Name': 'first'}
             agg_cols = {k: v for k, v in agg_cols.items() if k in df.columns}
             if agg_cols:

@@ -34,6 +34,19 @@ def extraer_datos_sql():
             except (ValueError, TypeError):
                 return s  # F04, F08, etc. se quedan igual
         df_ventas['StoreID'] = df_ventas['StoreID'].apply(_norm_store_id)
+        # Si Detalle trae nombre de sede en vez de código, mapear a código (Medellín, Plaza Claro, Cafam)
+        ALIAS_A_CODIGO = {
+            "MEDELLIN": "201", "MEDELLÍN": "201",
+            "PLAZA CLARO": "F04", "PLAZACLARO": "F04",
+            "CAFAM": "611",
+        }
+        def _a_codigo(x):
+            k = str(x).strip().upper().replace("  ", " ")
+            # Quitar tildes para que "MEDELLÍN" y "MEDELLIN" coincidan
+            for old, new in [("Í", "I"), ("É", "E"), ("Á", "A"), ("Ó", "O"), ("Ú", "U"), ("Ñ", "N")]:
+                k = k.replace(old, new)
+            return ALIAS_A_CODIGO.get(k, x)
+        df_ventas['StoreID'] = df_ventas['StoreID'].apply(_a_codigo)
         
         # Forzado numérico para evitar errores de concatenación
         df_ventas['VlrBruto'] = pd.to_numeric(df_ventas['VlrBruto'], errors='coerce').fillna(0.0)
