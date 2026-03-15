@@ -1573,6 +1573,26 @@ def _main_impl():
         tbl_html += "<tr><td>2025</td>" + "".join(f"<td>{v}</td>" for v in celdas_25) + "</tr>"
         tbl_html += "</tbody></table>"
         st.markdown(tbl_html, unsafe_allow_html=True)
+        # Tabla TICKET PROMEDIO 2026 por mes (1×14): valor $ por mes, total = YTD ventas/YTD transacciones
+        transacciones_26 = {int(r["Mes"]): r["Transacciones"] for _, r in mes_26.iterrows()}
+        ticket_26 = {int(r["Mes"]): r["Ticket"] for _, r in mes_26.iterrows() if pd.notna(r.get("Ticket"))}
+        sum_ventas = sum(ventas_26.values())
+        sum_tx = sum(transacciones_26.values())
+        ticket_ytd = (sum_ventas / sum_tx) if sum_tx and sum_tx > 0 else None
+        celdas_ticket = [f_moneda(ticket_26.get(i)) if ticket_26.get(i) and pd.notna(ticket_26.get(i)) else "$0" for i, _ in enumerate(cols_mes, 1)]
+        celdas_ticket += [f_moneda(ticket_ytd) if ticket_ytd is not None else "—"]
+        st.markdown(f"**TICKET PROMEDIO 2026 POR MES** (en $)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        tbl_ticket = "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        tbl_ticket += "<tr><td>2026</td>" + "".join(f"<td>{v}</td>" for v in celdas_ticket) + "</tr></tbody></table>"
+        st.markdown(tbl_css + tbl_ticket, unsafe_allow_html=True)
+        # Tabla TRANSACCIONES 2026 por mes (1×14): cantidad por mes, total = suma
+        vals_tx_26 = {c: int(transacciones_26.get(i, 0)) for i, c in enumerate(cols_mes, 1)}
+        tot_tx_26 = sum(transacciones_26.values())
+        celdas_tx = [_fmt_unidades(vals_tx_26[c]) for c in cols_mes] + [_fmt_unidades(tot_tx_26)]
+        st.markdown(f"**TRANSACCIONES 2026 POR MES**  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        tbl_tx = "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        tbl_tx += "<tr><td>2026</td>" + "".join(f"<td>{v}</td>" for v in celdas_tx) + "</tr></tbody></table>"
+        st.markdown(tbl_css + tbl_tx, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
