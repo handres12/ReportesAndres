@@ -16,14 +16,16 @@
 ## 2. Estructura de la app (app.py)
 
 - **Entrada:** Si no hay sesión → pantalla de login (Microsoft **o** usuario/contraseña según configuración). Si hay sesión → informe.
-- **Informe:** 5 pestañas:
+- **Informe:** 6 pestañas:
   1. Ventas al público del día (por sede, con transacciones y ticket).
   2. Comparativo 2026 vs 2025 (Lunes vs Lunes opcional).
   3. Presupuesto diario vs ventas al público.
   4. Presupuesto acumulado vs ventas al público.
   5. Transacciones 2026 vs 2025.
+  6. Tendencia 2025 vs 2026 (mes a mes): gráfico 2026 con índice Enero=100 (Vr Neto Ventas POS, Nro Transacciones, Vr Ticket Promedio) y tabla 2×14 en HTML (VR Neto Ventas POS por año/mes en $).
 - **Filtros (sidebar):** Rango de fechas (Desde/Hasta), Restaurantes, Grupos, “Ocultar sedes sin venta real”, toggle “Lunes vs Lunes (comparativo 2025)”.
-- **Helpers importantes:** `get_engine()` (SQLite: si existe `LOCAL_DB_URL` en .env se usa; si no, en Cloud se arma la ruta con `__file__` y `bi_local_data.db`, con `check_same_thread=False`), `load_ventas_operativas()` (ventas + transacciones vía Invoice→Store→StoreID_External=Co), `load_financiero_excel()`, `load_mapeo_sedes()`, `_dataframe_serializable()` (evita LargeUtf8), `_st_dataframe()` y `_sidebar_toggle()` (compatibilidad Cloud), `_estilo_tabla_informe()` (estilo tablas).
+- **Helpers importantes:** `get_engine()`, `load_ventas_operativas()` (ventas + transacciones vía Invoice→Store→StoreID_External=Co; tras leer, normaliza `codigo_sede_crudo` y reagrupa por sede/fecha para evitar duplicados 201 vs 201.0), `load_financiero_excel()`, `load_mapeo_sedes()`, `_dataframe_serializable()`, `_st_dataframe()`, `_sidebar_toggle()`, `_estilo_tabla_informe()`, `_html_tabla_informe()` (tablas HTML compactas sin scroll), `_esc()` y `_cls_var()` (reutilizables para celdas).
+- **Tablas del informe:** Pestañas 1–4 y 5 usan tablas HTML compactas (`width: fit-content; max-width: 100%`) generadas con `_html_tabla_informe()` donde aplica; evitan scroll horizontal y espacios grandes. Pestaña 6: gráfico 2026 con tooltip 1 decimal; tabla 2×14 en HTML con valores en $ y punto de miles; títulos "TENDENCIA 2026 - VR NETO VENTAS POS…" y "VR NETO VENTAS POS X AÑO Y MES - (en Millones $) Del: (fecha)".
 
 ---
 
@@ -45,7 +47,7 @@
 | **database.py** | Motores SQLAlchemy: SQL Server (principal + NEWACRVentas) y SQLite (`engine_local`). |
 | **models.py** | Modelos SQLAlchemy para tablas locales (raw_ventas_2026, dim_store, hechos_excel_diario, etc.). |
 | **init_db.py** | Crea tablas en SQLite y siembra `sede_grupo_lookup`. |
-| **etl_sql.py** | Detalle (base principal) → `raw_ventas_2026`. |
+| **etl_sql.py** | Detalle (base principal) → `raw_ventas_2026`. Normaliza `StoreID` al cargar (201.0/0201→'201', F04 se mantiene) para coincidir con MAPEO_SEDES. |
 | **etl_maestros.py** | NEWACRVentas: Store, Invoice, etc. → `dim_store`, `raw_invoice_2026`. |
 | **etl_excel.py** | Excel/FTP → presupuesto e histórico → `hechos_excel_diario`, etc. |
 | **bi_local_data.db** | SQLite principal. No subir si tiene datos sensibles; en Cloud puede estar vacío o ser copia. |
@@ -89,8 +91,9 @@
 - **Tab 2 (Comparativo 2026 vs 2025):** `df_op` (2026) y histórico 2025 (`df_h`) con fechas alineadas (Lunes vs Lunes) o mismo día; variación y semáforos.
 - **Tab 3 (Ppto diario):** presupuesto diario vs ventas del día en el rango; `df_r` / `df_p` por sede.
 - **Tab 4 (Ppto acumulado):** presupuesto acumulado vs ventas acumuladas hasta `f_fin`; `df_r_acum` / `df_p_acum`; título con “MES DE MARZO” (o el mes de f_fin).
-- **Tab 5 (Transacciones 2026 vs 2025):** 2026 desde `df_op` (Cantidad_Transacciones por sede/fecha); 2025 desde `load_transacciones_hist_2025()` (archivo `transacciones_hist*.xlsx`, diarizado). Mismo alineamiento de fechas que el comparativo de ventas. No modificar esta lógica al agregar otros análisis.
-- Todas las tablas que se muestran pasan por `_estilo_tabla_informe()` y por `_dataframe_serializable()` (vía `_st_dataframe`). No mostrar un DataFrame sin pasar por eso o puede reaparecer el error LargeUtf8 en Cloud.
+- **Tab 5 (Transacciones 2026 vs 2025):** 2026 desde `df_op`; 2025 desde `load_transacciones_hist_2025()` (transacciones_hist*.xlsx). Tabla HTML compacta. Expander cuando hay sedes con $0 en 2026: instrucción para ejecutar `python debug_raw_ventas_2026.py <fecha>`.
+- **Tab 6 (Tendencia 2025 vs 2026):** Solo 2026 en gráfico: tres líneas (Vr Neto Ventas POS, Nro Transacciones, Vr Ticket Promedio) con índice Enero=100. Columna Fecha en datetime; normalización de códigos (201.0→201) para evitar $0 en Medellín/Plaza Claro cuando en Detalle sí hay datos. Tabla 2×14 en HTML ($, punto de miles); títulos con "Del: (fecha acumulado)".
+- Todas las tablas del informe pasan por `_estilo_tabla_informe()` y `_dataframe_serializable()` (vía `_st_dataframe`) o por `_html_tabla_informe()` (HTML compacto sin scroll). No mostrar un DataFrame sin eso o puede reaparecer LargeUtf8 en Cloud.
 
 ---
 
@@ -142,8 +145,10 @@
 
 ## Última actualización
 
-- **Fecha:** 2026-03-12  
+- **Fecha:** 2026-03-15  
 - **Cambios recientes:** Login Microsoft local + web (OAuth Authlib en Cloud). Backup app_backup_actual.py. Docs PASO_A_PASO_LOGIN_*.md. — FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app. **Actualización automática:** `ejecutar_etls.py`, `ejecutar_etls_6y8.bat` y `programar_tareas_etl.ps1` para ETLs a las 6:00 y 8:00 (sección 7b).
+
+- 2026-03-15: Pestaña 6 Tendencia 2025 vs 2026 (gráfico índice Enero=100, tabla HTML 2×14). Pestañas 1–5 tablas HTML compactas. ETL y app: normalización StoreID/codigo_sede_crudo. debug_raw_ventas_2026.py (argumento fecha), validar_transacciones_2025.py (Cartagena/Paraderos FR/Rionegro).
 
 **Al hacer cambios relevantes:** editar la sección que corresponda arriba y añadir una línea aquí, por ejemplo:  
 `- YYYY-MM-DD: [descripción breve del cambio].`

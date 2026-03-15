@@ -23,9 +23,17 @@ def extraer_datos_sql():
         df_ventas = pd.read_sql(query_ventas, con=engine_sql_server)
         print(f"OK Se extrajeron {len(df_ventas)} registros de items.")
         
-        # Limpieza de nulos y estandarización de StoreID
+        # Limpieza de nulos y estandarización de StoreID (igual que en app.py / MAPEO_SEDES)
         df_ventas = df_ventas.dropna(subset=['StoreID', 'Fecha'])
-        df_ventas['StoreID'] = df_ventas['StoreID'].astype(str).str.strip()
+        df_ventas['StoreID'] = df_ventas['StoreID'].astype(str).str.strip().str.upper()
+        # Normalizar: quitar ceros a la izquierda; si es numérico (ej. 201.0) dejar solo dígitos sin .0
+        def _norm_store_id(s):
+            s = str(s).strip().upper().lstrip('0') or '0'
+            try:
+                return str(int(float(s)))  # 201.0 -> 201, 0201 -> 201
+            except (ValueError, TypeError):
+                return s  # F04, F08, etc. se quedan igual
+        df_ventas['StoreID'] = df_ventas['StoreID'].apply(_norm_store_id)
         
         # Forzado numérico para evitar errores de concatenación
         df_ventas['VlrBruto'] = pd.to_numeric(df_ventas['VlrBruto'], errors='coerce').fillna(0.0)

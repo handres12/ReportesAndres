@@ -4,6 +4,7 @@ Muestra: ruta, columnas, Co (raw y normalizado), fechas 2025 y si los códigos c
 Ejecutar en la raíz del proyecto: python validar_transacciones_2025.py
 """
 import os
+from datetime import date
 import pandas as pd
 
 # Mismo mapeo que usa la app (código normalizado -> (grupo, sede))
@@ -99,6 +100,8 @@ def main():
         no_mapeo = [c for c in co_unique["_co_norm"].astype(str).unique() if c and c not in MAPEO_SEDES]
         if no_mapeo:
             print("\nCódigos NO en mapeo (saldrán 0):", no_mapeo)
+        # Validación específica: Cartagena, Paraderos FR, Rionegro (Rionegro abrió abril 2025)
+        _reportar_sedes_2025(df, formato_mensual=True)
         print("\nPara la WEB: sube el archivo al repo (raíz o fuentes_excel) y haz push.")
         return
 
@@ -134,7 +137,64 @@ def main():
     no_mapeo = [c for c in co_unique["_co_norm"].astype(str).unique() if c and c not in MAPEO_SEDES]
     if no_mapeo:
         print("Códigos NO en mapeo:", no_mapeo)
+    _reportar_sedes_2025(df_2025, formato_mensual=False)
     print("\nPara la WEB: sube el archivo al repo y haz push.")
+
+
+# Sedes a validar: Cartagena, Paraderos FR (Bazaar, Hyatt, Plaza Claro), Rionegro (abrió abril 2025)
+SEDES_A_VALIDAR = {
+    "F08": ("RBB", "CARTAGENA"),
+    "F09": ("PARADERO FR", "BAZAAR"),
+    "F05": ("PARADERO FR", "HYATT"),
+    "F04": ("PARADERO FR", "PLAZA CLARO"),
+    "305": ("PARADERO", "RIONEGRO"),  # abrió abril 2025: sin datos ene-mar es correcto
+}
+
+
+def _reportar_sedes_2025(df, formato_mensual=True):
+    """Reporta si el archivo tiene información 2025 para Cartagena, Paraderos FR y Rionegro."""
+    print("\n--- Validación: Cartagena, Paraderos FR, Rionegro (2025) ---")
+    if formato_mensual:
+        # df tiene _co_norm, _mes_str, _tx
+        if "_co_norm" not in df.columns or "_tx" not in df.columns:
+            return
+        for co, (grupo, nombre) in SEDES_A_VALIDAR.items():
+            sub = df[df["_co_norm"].astype(str).str.strip() == co]
+            if sub.empty:
+                print(f"  {nombre} ({co}): SIN datos en el archivo.")
+                if co == "305":
+                    print("    (Rionegro abrió en abril 2025; si no hay filas, agregar al menos de abr-dic 2025.)")
+                continue
+            total = sub["_tx"].sum()
+            meses = sub["_mes_str"].tolist()
+            print(f"  {nombre} ({co}): SÍ hay datos. Total transacciones 2025: {total:,.0f}. Meses: {', '.join(sorted(set(meses)))}")
+            if co == "305":
+                if "enero" in meses or "febrero" in meses or "marzo" in meses:
+                    print("    (Rionegro abrió abril 2025; datos ene-mar podrían ser 0 o no esperados.)")
+                else:
+                    print("    (Rionegro abrió abril 2025; solo datos desde abril es correcto.)")
+    else:
+        # df tiene _co_norm, _fecha, _tx
+        if "_co_norm" not in df.columns or "_fecha" not in df.columns:
+            return
+        for co, (grupo, nombre) in SEDES_A_VALIDAR.items():
+            sub = df[df["_co_norm"].astype(str).str.strip() == co]
+            if sub.empty:
+                print(f"  {nombre} ({co}): SIN datos en el archivo.")
+                if co == "305":
+                    print("    (Rionegro abrió abril 2025; si no hay filas, agregar al menos de abr-dic 2025.)")
+                continue
+            total = sub["_tx"].sum()
+            fechas = sub["_fecha"]
+            min_f, max_f = fechas.min(), fechas.max()
+            print(f"  {nombre} ({co}): SÍ hay datos. Total 2025: {total:,.0f}. Rango: {min_f} a {max_f}")
+            if co == "305":
+                antes_abril = sub[sub["_fecha"] < date(2025, 4, 1)]
+                if not antes_abril.empty and antes_abril["_tx"].sum() > 0:
+                    print("    (Rionegro abrió abril 2025; hay datos antes de abril, revisar si es correcto.)")
+                else:
+                    print("    (Rionegro abrió abril 2025; sin datos ene-mar es correcto.)")
+
 
 if __name__ == "__main__":
     main()

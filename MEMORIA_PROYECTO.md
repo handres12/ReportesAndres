@@ -2,7 +2,7 @@
 
 **Para entrar en contexto rápido (IA o humano):** leer primero **`CONTEXTO_PROYECTO_IA.md`**.
 
-**Última actualización:** 2026-03-14 (pipeline diario, una sentencia, memoria ampliada)  
+**Última actualización:** 2026-03-15 (pestaña 6 Tendencia, tablas HTML compactas, ETL/app normalización, validación 2025)  
 **Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel/FTP) usando una base de datos local SQLite (bi_local_data.db).
 
 ## 1. REGLAS ESTRICTAS PARA LA IA
@@ -13,14 +13,14 @@
 
 ## 2. DICCIONARIO DE ARCHIVOS (ARQUITECTURA)
 * **`.env`**: Variables de entorno (credenciales SQL Server, SQLite, FTP).
-* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). **Login con Microsoft:** si en `.streamlit/secrets.toml` está `[auth]` con `client_id` y `client_secret`, la app muestra solo "Iniciar sesión con Microsoft" (Authlib/OAuth; cuentas válidas de Azure). Detalle en **CONTEXTO_PROYECTO_IA.md** §3 y **AUTH_MICROSOFT.md**. Si no hay [auth], se usa login usuario/contraseña. 5 pestañas: ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, **transacciones 2026 vs 2025**.
+* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Login Microsoft o usuario/contraseña (CONTEXTO §3). **6 pestañas:** ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025, **Tendencia 2025 vs 2026** (gráfico 2026 índice Enero=100, tabla HTML 2×14). Tablas 1–5 con `_html_tabla_informe()` (HTML compacto sin scroll). `load_ventas_operativas()` normaliza `codigo_sede_crudo` y reagrupa por sede/fecha.
 * **`auth.py`**: Login usuario/contraseña (tabla `usuarios`, bcrypt). Se usa cuando no hay [auth] Microsoft.
 * **`app_backup_actual.py`**: Copia de seguridad de app.py. Actualizar antes de cambios grandes.
 * **`bi_local_data.db`**: Base de datos SQLite principal. Convergen todos los ETLs; se sube a GitHub para la web (Streamlit Cloud).
 * **`database.py`**: Conexiones SQLAlchemy: SQL Server principal, NEWACRVentas (secundaria), SQLite local.
 * **`models.py`**: Estructura de tablas locales (RawVentas2026, RawInvoice2026, dim_store, hechos_excel_diario, etc.).
 * **`init_db.py`**: Crea las tablas vacías en SQLite si no existen.
-* **`etl_sql.py`**: Extrae ventas (tabla Detalle, base principal) → `raw_ventas_2026`. Carga completa año 2026.
+* **`etl_sql.py`**: Extrae ventas (Detalle) → `raw_ventas_2026`. Normaliza StoreID al cargar (201.0/0201→'201', F04 se mantiene) para coincidir con MAPEO_SEDES.
 * **`etl_maestros.py`**: NEWACRVentas → `dim_store`, `dim_item_*`, `raw_invoice_2026`. Invoice: carga incremental; re-trae últimos 2 días para evitar "ayer" con transacciones incompletas.
 * **`etl_excel.py`**: Excel en `fuentes_excel`/raíz → presupuesto e histórico → `hechos_excel_diario` (no borra escenario Historico_Diario; ese lo carga el FTP).
 * **`ejecutar_etls.py`**: Orden fijo: 1) etl_maestros, 2) etl_sql, 3) etl_excel. Para Programador de tareas (ej. 6:00 y 8:00).
@@ -36,6 +36,8 @@
 * **`ACTUALIZACION_EN_LA_NUBE.md`**: Opciones para que la actualización no dependa del PC (VM en Azure, Functions, GitHub Actions); recomendación y pasos mínimos para una VM.
 * **`validador_ventas.py`**: Diagnóstico: confirmar datos de ventas en SQLite.
 * **`check_transacciones.py`**: Diagnóstico: por qué no salen transacciones (JOIN Invoice–Store, etc.).
+* **`debug_raw_ventas_2026.py`**: Diagnóstico ventas 2026; acepta fecha por argumento (`python debug_raw_ventas_2026.py 2026-03-13`); indica si faltan 201 o F04.
+* **`validar_transacciones_2025.py`**: Valida transacciones 2025: Cartagena (F08) y Paraderos FR (F09, F05, F04) sin datos; Rionegro (305) con datos desde abril 2025.
 
 ## 3. ARQUITECTURA DE DATOS Y RELACIONES (DIAGRAMA)
 Las bases de datos se dividen en dos orígenes que convergen en SQLite. El cruce principal SIEMPRE debe hacerse a través de `dim_store`, conectando el `StoreID` (interno de Micros) con el `StoreID_External` (código de negocio).
@@ -85,7 +87,7 @@ Finanzas (Excel): hechos_excel_diario.StoreID_External = dim_store.StoreID_Exter
 
 Regla de Limpieza: Para cruzar hechos_excel_diario con dim_store, SIEMPRE aplicar: LTRIM(UPPER(TRIM(CAST(columna AS TEXT))), '0') para evitar discrepancias entre "002" y "2", o fallos con letras como "F08".
 
-**Pestaña 5 – Comparativo Transacciones 2026 vs 2025:** 2026 desde `df_op` (Cantidad_Transacciones por sede/fecha, ya en load_ventas_operativas). 2025 desde archivo local `transacciones_hist*.xlsx` (formato Co + Mes + 2025), cargado con `load_transacciones_hist_2025()` y diarizado; mismo alineamiento de fechas (Lunes vs Lunes o mismo día) que el comparativo de ventas. No modificar la lógica de esta pestaña al agregar otros análisis.
+**Pestaña 5 – Transacciones 2026 vs 2025:** 2026 desde `df_op`, 2025 desde `transacciones_hist*.xlsx` vía `load_transacciones_hist_2025()`. Tabla HTML compacta; expander con instrucción `debug_raw_ventas_2026.py <fecha>` si hay $0 en 2026. **Pestaña 6 – Tendencia 2025 vs 2026:** Gráfico solo 2026 (índice Enero=100); tabla 2×14 HTML; normalización de códigos y Fecha en app para evitar $0 en Medellín/Plaza Claro. No modificar la lógica de pestañas 5–6 al agregar otros análisis.
 
 4. DICCIONARIOS DE MAPEO (CRÍTICO)
 El ETL depende de este mapeo manual inyectado en etl_excel.py para evitar el error "SIN GRUPO".
@@ -129,6 +131,6 @@ O doble clic en **`cargar_todo.bat`**.
 
 **Cómo se blinda la información hoy para que cada cambio no genere modificaciones:**
 
-1. **Lo que no se toca:** Rutas y nombres de los Excel en `fuentes_excel`/raíz. Nombres de tablas y columnas que usa la app (`raw_ventas_2026`, `raw_invoice_2026`, `dim_store`, `hechos_excel_diario`). Orden de los ETLs (maestros → ventas SQL → Excel). Lógica y fuentes de datos de las pestañas 1–5 (ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025).
+1. **Lo que no se toca:** Rutas y nombres de los Excel en `fuentes_excel`/raíz. Nombres de tablas y columnas que usa la app. Orden de los ETLs (maestros → ventas SQL → Excel). Lógica y fuentes de datos de las pestañas 1–6 (ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025, tendencia 2025 vs 2026).
 2. **Regla al agregar análisis:** (A) **Nuevas pestañas** que solo **leen** las tablas ya existentes, sin modificar consultas ni código de las pestañas 1–5. (B) Si hace falta datos nuevos: **tablas nuevas** + **ETL nuevo** que las llene; en la app solo se agrega una pestaña que lee esas tablas. Así cada cambio queda individualizado y no rompe lo construido.
 3. **Documento de referencia:** **`PIPELINE_DATOS.md`** describe el flujo completo, qué hace cada ETL, qué no mover y cómo blindar. Antes de cambios grandes en `app.py`, copiar a `app_backup_actual.py`.
