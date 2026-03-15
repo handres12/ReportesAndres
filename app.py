@@ -428,34 +428,6 @@ BRAND_CSS = """
     border-radius: 8px;
     height: 3px !important;
   }
-
-  /* Vista móvil: automática en pantallas pequeñas */
-  @media (max-width: 768px) {
-    .main .block-container { padding: 1rem 0.75rem !important; max-width: 100% !important; }
-    div[data-testid="stMetric"] { min-width: 100% !important; height: auto !important; min-height: 6rem !important; padding: 1rem !important; }
-    div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) { flex-direction: column !important; }
-    .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap !important; gap: 4px !important; }
-    .stTabs [data-baseweb="tab"] { font-size: 0.75rem !important; padding: 0.4rem 0.5rem !important; min-width: auto !important; }
-    table.tbl-ventas-mes, .tbl-informe, .tbl-tx5 { font-size: 0.8rem !important; display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    [data-testid="stSidebar"] { min-width: 260px !important; }
-  }
-</style>
-"""
-
-# CSS extra cuando el usuario activa "Vista móvil" manualmente (útil en tablet o para forzar layout móvil)
-VISTA_MOVIL_CSS = """
-<style id="vista-movil-css">
-  .main .block-container { padding: 1rem 0.75rem !important; max-width: 100% !important; }
-  div[data-testid="stMetric"] { min-width: 100% !important; height: auto !important; min-height: 6rem !important; padding: 1rem !important; }
-  div[data-testid="stHorizontalBlock"] > div:has(div[data-testid="stMetric"]) { flex-direction: column !important; }
-  .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap !important; gap: 6px !important; }
-  .stTabs [data-baseweb="tab"] { font-size: 0.8rem !important; padding: 0.5rem 0.6rem !important; min-width: auto !important; }
-  table.tbl-ventas-mes, .tbl-informe, .tbl-tx5 { font-size: 0.85rem !important; display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  [data-testid="stSidebar"] { min-width: 260px !important; }
-  .brand-title { font-size: 1.4rem !important; }
-  .brand-subtitle { font-size: 0.95rem !important; }
-  .section-title { font-size: 1.1rem !important; }
-  button, [data-testid="stSelectbox"], [data-testid="stMultiSelect"] { min-height: 2.5rem !important; }
 </style>
 """
 
@@ -1000,11 +972,7 @@ def _main_impl():
             _pagina_login_registro()
             return
 
-    if "vista_movil" not in st.session_state:
-        st.session_state["vista_movil"] = False
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
-    if st.session_state.get("vista_movil"):
-        st.markdown(VISTA_MOVIL_CSS, unsafe_allow_html=True)
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo-andres.png")
     if os.path.isfile(logo_path):
         with open(logo_path, "rb") as f:
@@ -1073,11 +1041,6 @@ def _main_impl():
     grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
     g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map)
     ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
-    try:
-        vista_movil = st.sidebar.toggle("📱 Vista móvil", value=st.session_state["vista_movil"], help="Optimiza tablas, pestañas y métricas para pantallas pequeñas o uso táctil.")
-    except Exception:
-        vista_movil = st.sidebar.checkbox("📱 Vista móvil", value=st.session_state["vista_movil"], help="Optimiza para pantallas pequeñas o uso táctil.")
-    st.session_state["vista_movil"] = vista_movil
 
     st.sidebar.markdown("---")
     if st.sidebar.button("🔄 Refrescar datos", help="Tras ejecutar el ETL, pulsa aquí para cargar ventas y presupuesto de nuevo (evita caché)."):
