@@ -1301,8 +1301,9 @@ def _main_impl():
         u_f = u_f.date() if hasattr(u_f, 'date') else date.today()
 
     st.sidebar.subheader("Rango de fechas")
-    f_inicio = st.sidebar.date_input("Desde", u_f, key="f_desde")
-    f_fin = st.sidebar.date_input("Hasta", u_f, key="f_hasta")
+    _refresh = st.session_state.get("_refresh", 0)
+    f_inicio = st.sidebar.date_input("Desde", u_f, key=f"f_desde_{_refresh}")
+    f_fin = st.sidebar.date_input("Hasta", u_f, key=f"f_hasta_{_refresh}")
     if f_fin < f_inicio:
         f_fin = f_inicio
         st.sidebar.caption("Hasta no puede ser anterior a Desde. Se usó la misma fecha.")
@@ -1313,15 +1314,14 @@ def _main_impl():
     s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key="p_sedes")
     grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
     g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key="p_grupos")
-
+    
     st.sidebar.markdown("---")
     if st.sidebar.button(
         "🔄 Refrescar datos",
         help="Vuelve al reporte por defecto: última fecha con datos, todos los restaurantes y grupos (y recarga cachés).",
     ):
-        # Resetear filtros y fechas al estado inicial
-        st.session_state["f_desde"] = u_f
-        st.session_state["f_hasta"] = u_f
+        # Resetear filtros y fechas al estado inicial (nueva key de fechas para que los date_input se recreen con u_f)
+        st.session_state["_refresh"] = st.session_state.get("_refresh", 0) + 1
         st.session_state["p_sedes"] = sedes_map
         st.session_state["p_grupos"] = grupos_map
         # Pestaña 7: volver a última fecha con datos

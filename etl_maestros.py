@@ -1,12 +1,17 @@
+import os
 import pandas as pd
 from datetime import date, timedelta
 from sqlalchemy import text, func
 from database import engine_sql_server_sec, engine_local, SessionLocalDB
 from models import DimStore, DimItemGroup, DimItemFamily, DimMenuItem, RawInvoice2026
 
-# Re-traer siempre los últimos N días de Invoice para que "ayer" no quede incompleto
-INVOICE_RELOAD_DAYS = 2
+# Re-traer siempre los últimos N días de Invoice para que no queden días con transacciones incompletas.
+# Si un día (ej. 11-mar) solo tiene una tienda en raw_invoice_2026, es porque ese día no se ha
+# vuelto a traer desde que se cargó; aumentar este valor hace que se rellenen más días cada vez que corre el ETL.
+INVOICE_RELOAD_DAYS = int(os.getenv("INVOICE_RELOAD_DAYS", "45"))
 INICIO_2026 = date(2026, 1, 1)
+# Recarga completa 2026 (útil una vez para repoblar todos los días): ejecutar con env FULL_RELOAD_INVOICE_2026=1
+FULL_RELOAD_INVOICE_2026 = os.getenv("FULL_RELOAD_INVOICE_2026", "").strip().lower() in ("1", "true", "yes")
 
 def extraer_maestros():
     print("Iniciando extracción desde base de datos secundaria (NEWACRVentas)...\n")
@@ -44,17 +49,23 @@ def extraer_maestros():
         except Exception as e:
             print(f"  -> Error en {tabla_origen}: {e}")
 
-    # 2. Extraer tabla transaccional Invoice (Carga Incremental)
-    print("\nExtrayendo tabla transaccional: Invoice...")
+    # 2. Transacciones: facturas (InvoiceID) de Invoice desde 2026-01-01, por día por tienda → raw_invoice_2026
+    print("\nExtrayendo Invoice (facturas por día por tienda, desde 2026-01-01)...")
     
     with SessionLocalDB() as session:
         max_fecha_inv = session.query(func.max(RawInvoice2026.BusinessDate)).scalar()
         
-        if max_fecha_inv is None:
-            print("No se encontraron Invoices previos. Se hará carga inicial desde 2026-01-01.")
+        if max_fecha_inv is None or FULL_RELOAD_INVOICE_2026:
+            if FULL_RELOAD_INVOICE_2026:
+                print("FULL_RELOAD_INVOICE_2026=1: recarga completa de Invoice 2026 desde 2026-01-01.")
+            else:
+                print("No se encontraron Invoices previos. Se hará carga inicial desde 2026-01-01.")
             fecha_inicio_inv = '2026-01-01'
+            if max_fecha_inv is not None:
+                session.execute(text("DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '2026-01-01'"))
+                session.commit()
         else:
-            # Re-traer últimos N días para que "ayer" no quede con transacciones incompletas
+            # Re-traer últimos N días para que no queden días con transacciones incompletas
             max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, 'date') else max_fecha_inv
             desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
             fecha_inicio_inv = max(desde, INICIO_2026).strftime('%Y-%m-%d')
@@ -63,7 +74,7 @@ def extraer_maestros():
             session.commit()
 
     try:
-        # 2.a) Traer detalle de Invoice (como antes) a raw_invoice_2026
+        # 2.a) Traer facturas (InvoiceID) de Invoice → raw_invoice_2026. La app agrega COUNT(InvoiceID) por día y tienda.
         query_invoice = f"""
         SELECT * FROM Invoice 
         WHERE BusinessDate >= '{fecha_inicio_inv}' AND BusinessDate < '2027-01-01'
@@ -71,16 +82,15 @@ def extraer_maestros():
         df_invoice = pd.read_sql(query_invoice, con=engine_sql_server_sec)
         
         if df_invoice.empty:
-            print("OK Los Invoices ya estan 100% al dia.")
+            print("OK raw_invoice_2026: sin filas nuevas (ya al día).")
         else:
             df_invoice = df_invoice.dropna(subset=['InvoiceID', 'StoreID'])
             df_invoice = df_invoice.drop_duplicates(subset=['InvoiceID', 'StoreID'])
-            
             df_invoice.to_sql('raw_invoice_2026', con=engine_local, if_exists='append', index=False)
-            print(f"OK Se agregaron {len(df_invoice)} Invoices nuevos/actualizados en raw_invoice_2026.")
+            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas → transacciones por día por tienda.")
 
-        # 2.b) Tabla venta por hora. La hora se calcula EN SQL con DATEPART (no depende del driver).
-        print("\nCalculando venta horaria (Invoice → venta_horaria_2026)...")
+        # 2.b) Opcional: tabla auxiliar venta_horaria_2026 (solo si la app usa ventas/transacciones por hora).
+        print("\nActualizando tabla auxiliar venta_horaria_2026...")
         query_invoice_hora = f"""
         SELECT
             StoreID,
@@ -124,8 +134,7 @@ def extraer_maestros():
             )
 
             df_horaria.to_sql("venta_horaria_2026", con=engine_local, if_exists="append", index=False)
-            _horas_unicas = sorted(df_horaria["Hora"].unique().tolist())
-            print(f"OK Cargadas/actualizadas {len(df_horaria)} filas en venta_horaria_2026. Horas presentes: {_horas_unicas[:24]}{'…' if len(_horas_unicas) > 24 else ''}")
+            print(f"OK venta_horaria_2026: {len(df_horaria)} filas (tabla auxiliar).")
         
     except Exception as e:
         print(f"Error al procesar Invoice / venta_horaria_2026: {e}")
