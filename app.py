@@ -759,12 +759,14 @@ def load_ventas_2025_ftp():
                     con=conn,
                 )
         if df.empty:
-            return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
+            return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas", "Transacciones"])
         df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
         df["codigo_sede_crudo"] = df["codigo_sede_crudo"].astype(str).str.strip().str.upper().str.lstrip("0")
+        # La pestaña 2 solo requiere Ventas; dejamos Transacciones en 0 para compatibilidad con el pipeline (groupby).
+        df["Transacciones"] = 0.0
         return df
     except Exception:
-        return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
+        return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas", "Transacciones"])
 
 
 @st.cache_data(ttl=600)
@@ -1376,6 +1378,7 @@ def _main_impl():
         try:
             load_ventas_operativas.clear()
             load_financiero_excel.clear()
+            load_ventas_2025_ftp.clear()
             load_transacciones_hist_2025.clear()
             load_pestana_6_excel.clear()
             load_ventas_horarias_2026.clear()
@@ -1581,7 +1584,7 @@ def _main_impl():
             st.info("No hay ventas al público 2026 para el día seleccionado.")
         else:
             if df_h.empty:
-                st.warning("No hay datos 2025 cargados en la tabla local `raw_ventas_2025`. Ejecuta `python etl_ftp_ventas_2025.py` (requiere acceso al FTP).")
+                st.warning("No hay datos 2025 disponibles (ni en `raw_ventas_2025` ni en `hechos_excel_diario` con `Historico_Diario_FTP`). Ejecuta `python etl_ftp_ventas_2025.py` y luego pulsa «Refrescar datos».")
             codigos_r = set(df_r['codigo_sede_crudo'])
             codigos_h = set(df_h['codigo_sede_crudo']) if not df_h.empty else set()
             codigos = codigos_r | codigos_h
