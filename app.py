@@ -1387,8 +1387,10 @@ def _main_impl():
         st.rerun()
     # Flag global para el comparativo 2025 (se controla visualmente en la pestaña 2)
     alinear = st.session_state.get("p2_lunes_vs_lunes", True)
-    f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
-    f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
+    # Para alinear Lunes vs Lunes usamos un desfase de ~1 año.
+    # 365 días hacia atrás asegura que 16/03/2026 ↔ 17/03/2025 (mismo día de la semana).
+    f_inicio_25 = (f_inicio - timedelta(days=365)) if alinear else f_inicio.replace(year=2025)
+    f_fin_25 = (f_fin - timedelta(days=365)) if alinear else f_fin.replace(year=2025)
     # La opción \"Ppto acumulado: mismo rango\" ahora vive dentro de la pestaña 4 (no en el sidebar).
 
     # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
@@ -1400,24 +1402,30 @@ def _main_impl():
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
 
-    # Comparativo 2025 (pestaña 2): usar tabla dedicada raw_ventas_2025 (cargada desde FTP).
-    # Esto evita depender de hechos_excel_diario y deja la lógica estable.
-    df_25 = load_ventas_2025_ftp()
-    df_h_raw = df_25[(df_25['Fecha'] >= f_inicio_25) & (df_25['Fecha'] <= f_fin_25)].copy()
+    # Comparativo 2025: datos del Excel/FTP ya consolidados en hechos_excel_diario (df_fin).
+    # Volvemos a la lógica estable original: tomar cualquier escenario "Historico" del rango 2025.
+    df_h_raw = df_fin[
+        (df_fin["Fecha"] >= f_inicio_25)
+        & (df_fin["Fecha"] <= f_fin_25)
+        & (df_fin["Escenario"].str.contains("Historico", na=False))
+    ].copy()
     if not df_h_raw.empty:
-        df_h_raw["codigo_sede_crudo"] = df_h_raw["codigo_sede_crudo"].astype(str).str.strip().str.upper().str.lstrip("0")
-        df_h_raw["Ventas"] = pd.to_numeric(df_h_raw["Ventas"], errors="coerce").fillna(0.0)
+        df_h_raw["Sede_Nom"] = df_h_raw["codigo_sede_crudo"].apply(
+            lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+        )
+        df_h_raw["Grupo"] = df_h_raw["codigo_sede_crudo"].apply(
+            lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+        )
+        df_h_raw = df_h_raw[
+            df_h_raw["Sede_Nom"].isin(s_filtro) & df_h_raw["Grupo"].isin(g_filtro)
+        ]
+        df_h = df_h_raw.groupby("codigo_sede_crudo", as_index=False).agg(
+            {"Ventas": "sum", "Transacciones": "sum", "Sede_Nom": "first", "Grupo": "first"}
+        )
     else:
-        df_h_raw = pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
-    if not df_h_raw.empty:
-        df_h_raw['Sede_Nom'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
-        df_h_raw['Grupo'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
-        df_h_raw = df_h_raw[df_h_raw['Sede_Nom'].isin(s_filtro) & df_h_raw['Grupo'].isin(g_filtro)]
-        df_h = df_h_raw.groupby('codigo_sede_crudo', as_index=False).agg({
-            'Ventas': 'sum', 'Transacciones': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'
-        })
-    else:
-        df_h = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Transacciones', 'Sede_Nom', 'Grupo'])
+        df_h = pd.DataFrame(
+            columns=["codigo_sede_crudo", "Ventas", "Transacciones", "Sede_Nom", "Grupo"]
+        )
 
     # Presupuesto diario: solo pestaña 3 usa PP 2026 x día (Presupuesto_Diario_2026) si existe; si no, Presupuesto_Diarizado
     df_p_raw_pp_dia = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')].copy()
