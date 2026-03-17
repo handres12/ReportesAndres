@@ -2090,6 +2090,25 @@ def _main_impl():
         v_act, tr_act, tk_act = _resumen_p7(fecha_sel)
         v_ref, tr_ref, tk_ref = _resumen_p7(fecha_ref)
 
+        # Diagnóstico rápido: qué datos se están usando para cada día (por si hay filtros activos)
+        with st.expander("Ver detalle de sedes y transacciones usadas en el comparativo"):
+            df_act = df_op[df_op["Fecha"] == fecha_sel].copy()
+            df_ref = df_op[df_op["Fecha"] == fecha_ref].copy()
+            for df_det, titulo in [(df_act, f"Día seleccionado ({fecha_sel})"), (df_ref, f"Día de referencia ({fecha_ref})")]:
+                if df_det.empty:
+                    st.caption(f"{titulo}: sin filas en df_op (no hay ventas cargadas para esa fecha con los filtros actuales).")
+                else:
+                    if "Sede_Nom" not in df_det.columns or "Grupo" not in df_det.columns:
+                        df_det["Sede_Nom"] = df_det["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1])
+                        df_det["Grupo"] = df_det["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0])
+                    df_det = df_det[df_det["Sede_Nom"].isin(s_filtro) & df_det["Grupo"].isin(g_filtro)]
+                    df_det["Venta_Real"] = df_det["VlrBruto"] - df_det["VlrTotalDesc"].abs()
+                    cols = ["Fecha", "codigo_sede_crudo", "Sede_Nom", "Grupo", "Venta_Real"]
+                    if "Cantidad_Transacciones" in df_det.columns:
+                        cols.append("Cantidad_Transacciones")
+                    st.caption(f"{titulo}: {len(df_det)} filas después de filtros de Restaurantes y Grupos.")
+                    st.dataframe(df_det[cols], use_container_width=True, hide_index=True)
+
         def _var_pct(act, ref):
             return None if ref == 0 else (act / ref) - 1.0
 
