@@ -16,13 +16,14 @@
 ## 2. Estructura de la app (app.py)
 
 - **Entrada:** Si no hay sesión → pantalla de login (Microsoft **o** usuario/contraseña según configuración). Si hay sesión → informe.
-- **Informe:** 6 pestañas:
+- **Informe:** 7 pestañas:
   1. Ventas al público del día (por sede, con transacciones y ticket).
   2. Comparativo 2026 vs 2025 (Lunes vs Lunes opcional).
   3. Presupuesto diario vs ventas al público.
   4. Presupuesto acumulado vs ventas al público.
   5. Transacciones 2026 vs 2025.
-  6. Tendencia 2025 vs 2026 (mes a mes): gráfico 2026 con índice Enero=100 (Vr Neto Ventas POS, Nro Transacciones, Vr Ticket Promedio) y tabla 2×14 en HTML (VR Neto Ventas POS por año/mes en $).
+  6. Tendencia 2025 vs 2026 (mes a mes): gráfico 2026 con índice Enero=100 (Vr Neto Ventas POS, Nro Transacciones, Vr Ticket Promedio) y tablas 3×15 en HTML para Vr Neto, Ticket y Transacciones (2024, 2025, 2026 + fila de variación 26/25).
+  7. Venta total por hora (solo 2026): usa Invoice.Transaction_Date + CheckSubTotal (tabla `raw_invoice_2026`) para construir ventas y transacciones por hora, respeta filtros de Restaurantes/Grupos y permite comparar el día seleccionado vs día anterior o 4 semanas antes (KPIs de venta, transacciones y ticket con variación %).
 - **Filtros (sidebar):** Rango de fechas (Desde/Hasta), Restaurantes, Grupos, “Ocultar sedes sin venta real”, toggle “Lunes vs Lunes (comparativo 2025)”.
 - **Helpers importantes:** `get_engine()`, `load_ventas_operativas()` (ventas + transacciones vía Invoice→Store→StoreID_External=Co; tras leer, normaliza `codigo_sede_crudo` y reagrupa por sede/fecha para evitar duplicados 201 vs 201.0), `load_financiero_excel()`, `load_mapeo_sedes()`, `_dataframe_serializable()`, `_st_dataframe()`, `_sidebar_toggle()`, `_estilo_tabla_informe()`, `_html_tabla_informe()` (tablas HTML compactas sin scroll), `_esc()` y `_cls_var()` (reutilizables para celdas).
 - **Tablas del informe:** Pestañas 1–4 y 5 usan tablas HTML compactas (`width: fit-content; max-width: 100%`) generadas con `_html_tabla_informe()` donde aplica; evitan scroll horizontal y espacios grandes. Pestaña 6: gráfico 2026 con tooltip 1 decimal; tabla 2×14 en HTML con valores en $ y punto de miles; títulos "TENDENCIA 2026 - VR NETO VENTAS POS…" y "VR NETO VENTAS POS X AÑO Y MES - (en Millones $) Del: (fecha)".
@@ -145,8 +146,8 @@
 
 ## Última actualización
 
-- **Fecha:** 2026-03-15  
-- **Cambios recientes:** Login Microsoft local + web (OAuth Authlib en Cloud). Backup app_backup_actual.py. Docs PASO_A_PASO_LOGIN_*.md. — FAQ “Preguntas frecuentes al retomar” (transacciones en 0, datos operativos, sedes XXX). Script `check_transacciones.py` para depurar transacciones sin tocar la app. **Actualización automática:** `ejecutar_etls.py`, `ejecutar_etls_6y8.bat` y `programar_tareas_etl.ps1` para ETLs a las 6:00 y 8:00 (sección 7b).
+- **Fecha:** 2026-03-16  
+- **Cambios recientes:** Ajustes pestaña 6 (tablas 3×15 con variación 26/25 y datos 2024–2026 desde Excel/operativo), nueva pestaña 7 de venta horaria basada en Invoice (Transaction_Date, CheckSubTotal) solo 2026, respeta filtros de Restaurantes/Grupos. Backup `app_backup_pestana7_20260309.py`.
 
 - 2026-03-15: Pestaña 6 Tendencia 2025 vs 2026 (gráfico índice Enero=100, tabla HTML 2×14). Pestañas 1–5 tablas HTML compactas. ETL y app: normalización StoreID/codigo_sede_crudo. debug_raw_ventas_2026.py (argumento fecha), validar_transacciones_2025.py (Cartagena/Paraderos FR/Rionegro).
 

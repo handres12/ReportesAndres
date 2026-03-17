@@ -2,7 +2,7 @@
 
 **Para entrar en contexto rápido (IA o humano):** leer primero **`CONTEXTO_PROYECTO_IA.md`**.
 
-**Última actualización:** 2026-03-15 (pestaña 6 Tendencia, tablas HTML compactas, ETL/app normalización, validación 2025)  
+**Última actualización:** 2026-03-16 (pestaña 6 Tendencia ajustada, nueva pestaña 7 venta horaria, backup app_backup_pestana7_20260309.py)  
 **Objetivo:** Dashboard gerencial en Streamlit (app.py) que cruce ventas operativas (SQL Server/Micros) vs Presupuestos e Históricos (Excel/FTP) usando una base de datos local SQLite (bi_local_data.db).
 
 ## 1. REGLAS ESTRICTAS PARA LA IA
@@ -13,9 +13,9 @@
 
 ## 2. DICCIONARIO DE ARCHIVOS (ARQUITECTURA)
 * **`.env`**: Variables de entorno (credenciales SQL Server, SQLite, FTP).
-* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Login Microsoft o usuario/contraseña (CONTEXTO §3). **6 pestañas:** ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025, **Tendencia 2025 vs 2026** (gráfico 2026 índice Enero=100, tabla HTML 2×14). Tablas 1–5 con `_html_tabla_informe()` (HTML compacto sin scroll). `load_ventas_operativas()` normaliza `codigo_sede_crudo` y reagrupa por sede/fecha.
+* **`app.py`**: DASHBOARD PRINCIPAL (Streamlit). Login Microsoft o usuario/contraseña (CONTEXTO §3). **7 pestañas:** ventas del día, comparativo 2026 vs 2025, presupuesto diario, presupuesto acumulado, transacciones 2026 vs 2025, **Tendencia 2025 vs 2026** (gráfico 2026 índice Enero=100, tablas HTML 3×15 con variación 26/25) y **Venta total por hora (tab 7)**. Tablas 1–5 y tab 6 usan `_html_tabla_informe()`/HTML compacto. `load_ventas_operativas()` normaliza `codigo_sede_crudo` y reagrupa por sede/fecha; `load_ventas_horarias_2026()` usa Invoice.Transaction_Date + CheckSubTotal para ventas horarias 2026 filtrables por Restaurante/Grupo.
 * **`auth.py`**: Login usuario/contraseña (tabla `usuarios`, bcrypt). Se usa cuando no hay [auth] Microsoft.
-* **`app_backup_actual.py`**: Copia de seguridad de app.py. Actualizar antes de cambios grandes.
+* **`app_backup_actual.py`** / **`app_backup_pestana7_20260309.py`**: Copias de seguridad de app.py. Actualizar antes de cambios grandes.
 * **`bi_local_data.db`**: Base de datos SQLite principal. Convergen todos los ETLs; se sube a GitHub para la web (Streamlit Cloud).
 * **`database.py`**: Conexiones SQLAlchemy: SQL Server principal, NEWACRVentas (secundaria), SQLite local.
 * **`models.py`**: Estructura de tablas locales (RawVentas2026, RawInvoice2026, dim_store, hechos_excel_diario, etc.).

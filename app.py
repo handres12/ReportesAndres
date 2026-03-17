@@ -147,6 +147,42 @@ def _st_dataframe(df, hide_index=False, **kwargs):
         opts_plain = {k: v for k, v in opts.items() if k in ("height", "use_container_width")}
         st.dataframe(df, width="stretch", hide_index=hide_index, **opts_plain)
 
+def _parse_transaction_date(serie):
+    """
+    Parsea Transaction_Date conservando la hora. Acepta datetime, string ISO o formato
+    tipo "3/09/2025 3:52:47 p. m." (12h con a. m. / p. m.). Devuelve serie datetime.
+    """
+    if serie.empty:
+        return serie
+    if pd.api.types.is_datetime64_any_dtype(serie):
+        return serie
+    s = serie.astype(str).str.strip()
+    # Normalizar español a formato que entiende pandas: " p. m." -> " PM", " a. m." -> " AM"
+    s = s.str.replace(r"\s+p\.\s*m\.", " PM", case=False, regex=True)
+    s = s.str.replace(r"\s+a\.\s*m\.", " AM", case=False, regex=True)
+    result = pd.Series(pd.NaT, index=serie.index, dtype="datetime64[ns]")
+    # Intentar primero formato día/mes/año con 12h (ej. "3/09/2025 3:52:47 p. m.")
+    for fmt in (
+        "%d/%m/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%d/%m/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = pd.to_datetime(s, format=fmt, errors="coerce")
+            mask = parsed.notna()
+            result = result.where(~mask, parsed)
+        except Exception:
+            continue
+    # Rellenar lo que siga sin parsear
+    still_na = result.isna()
+    if still_na.any():
+        result = result.where(~still_na, pd.to_datetime(serie, errors="coerce"))
+    return result
+
 def _dataframe_serializable(df):
     """Evita LargeUtf8 en frontend: solo columnas texto a tipo serializable. No cambia valores ni aspecto."""
     if df is None or df.empty:
@@ -567,6 +603,98 @@ def load_ventas_operativas():
         return pd.DataFrame()
 
 @st.cache_data(ttl=120)
+def load_ventas_horarias_2026(_cache_version=5):
+    """
+    Ventas y transacciones por hora (solo 2026) desde tabla local venta_horaria_2026.
+    Esa tabla se llena en el ETL extrayendo la Hora en Python desde Transaction_Date (como en Excel).
+    Solo se usa para el gráfico de la pestaña 7.
+    """
+    engine = get_engine()
+    # Asegurar que la tabla exista (la crea el ETL; si no se ha corrido, la creamos vacía para no fallar)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS venta_horaria_2026 (
+                    StoreID VARCHAR(50), BusinessDate DATE, Hora INTEGER,
+                    Venta_Hora FLOAT, Transacciones_Hora INTEGER
+                )
+            """))
+            conn.commit()
+    except Exception:
+        pass
+
+    norm_co = "LTRIM(UPPER(TRIM(CAST(%s AS TEXT))), '0')"
+    query = f"""
+    SELECT
+        {norm_co % 's.StoreID_External'} AS codigo_sede_crudo,
+        vh.BusinessDate AS Fecha,
+        vh.Hora AS Hora,
+        vh.Venta_Hora AS Venta_Hora,
+        vh.Transacciones_Hora AS Transacciones_Hora
+    FROM venta_horaria_2026 vh
+    INNER JOIN dim_store s
+        ON TRIM(CAST(COALESCE(vh.StoreID, '') AS TEXT)) = TRIM(CAST(COALESCE(s.StoreID, '') AS TEXT))
+    WHERE DATE(vh.BusinessDate) >= '2026-01-01'
+    """
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), con=conn)
+    except Exception as e:
+        if not _en_streamlit_cloud():
+            st.error(f"Error al leer ventas horarias (venta_horaria_2026): {e}")
+        return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Hora", "Venta_Hora", "Transacciones_Hora", "Sede_Nom", "Grupo"])
+
+    if df.empty:
+        return df
+
+    df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
+    df["Hora"] = pd.to_numeric(df["Hora"], errors="coerce").fillna(0).astype(int)
+
+    def _norm_codigo(c):
+        c = str(c).strip().upper().lstrip("0") or "0"
+        try:
+            c = str(int(float(c)))
+        except (ValueError, TypeError):
+            pass
+        ALIAS_A_CODIGO = {
+            "MEDELLIN": "201", "MEDELLÍN": "201",
+            "PLAZA CLARO": "F04", "PLAZACLARO": "F04",
+            "CAFAM": "611",
+        }
+        k = c.replace("  ", " ")
+        for old, new in [("Í", "I"), ("É", "E"), ("Á", "A"), ("Ó", "O"), ("Ú", "U"), ("Ñ", "N")]:
+            k = k.replace(old, new)
+        return ALIAS_A_CODIGO.get(k, c)
+
+    df["codigo_sede_crudo"] = df["codigo_sede_crudo"].astype(str).str.strip().apply(_norm_codigo)
+    MAPEO_SEDES = load_mapeo_sedes()
+    df["Sede_Nom"] = df["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1])
+    df["Grupo"] = df["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0])
+    return df
+
+
+def load_ventas_horarias_2026_raw():
+    """
+    Lee venta_horaria_2026 sin JOIN con dim_store.
+    Sirve para diagnóstico cuando el JOIN devuelve 0 filas (p. ej. StoreID no coincide).
+    """
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(
+                text("SELECT StoreID, BusinessDate AS Fecha, Hora, Venta_Hora, Transacciones_Hora FROM venta_horaria_2026 WHERE DATE(BusinessDate) >= '2026-01-01'"),
+                con=conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
+    df["Hora"] = pd.to_numeric(df["Hora"], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+@st.cache_data(ttl=120)
 def load_financiero_excel():
     """Presupuesto, histórico diarizado e Historico_Diario (2025). TTL 2 min para ver datos recién cargados (FTP/ETL)."""
     engine = get_engine()
@@ -706,6 +834,130 @@ def load_transacciones_hist_2025():
     agg = out.groupby(["codigo_sede_crudo", "Fecha"], as_index=False)["Transacciones"].sum()
     return agg
 
+
+@st.cache_data(ttl=600)
+def load_pestana_6_excel():
+    """
+    Carga venta 2024 y 2025.xlsx (o pestaña 6.xlsx) a nivel de fila (por establecimiento y mes).
+    Columnas: Co (opcional), Mes/#Mes, Venta 2024 (F), Venta 2025 (I), Transacciónes 2024/2025.
+    Añade Sede_Nom y Grupo desde Co + MAPEO_SEDES para que el informe pueda filtrar por Restaurantes/Grupos.
+    Devuelve DataFrame con _mes, _r24, _tx24, _r25, _tx25, Sede_Nom, Grupo. Si no hay Co, Sede_Nom/Grupo son NaN (se usan todas las filas).
+    """
+    def _norm_cols(cols):
+        return [str(c).strip().lstrip("\ufeff") for c in cols]
+
+    def _detectar_col(df, candidatos):
+        cols = _norm_cols(df.columns)
+        for cand in candidatos:
+            cand_low = cand.strip().lower()
+            for col in cols:
+                if cand_low in col.strip().lower():
+                    return col
+        return None
+
+    def _a_num(serie):
+        if serie is None or serie.empty:
+            return pd.Series(dtype=float)
+        # Si Excel devolvió números, usarlos tal cual (evitar borrar el punto decimal)
+        num = pd.to_numeric(serie, errors="coerce")
+        as_str = serie.astype(str)
+        cleaned = as_str.str.replace(r"\.", "", regex=True).str.replace(",", ".", regex=False)
+        parsed = pd.to_numeric(cleaned, errors="coerce")
+        return num.where(num.notna(), parsed).fillna(0)
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    posibles = [base, os.path.join(base, "fuentes_excel"), os.getcwd()]
+    ruta = None
+    ruta_pestana6 = None
+    for carpeta in posibles:
+        if not os.path.isdir(carpeta):
+            continue
+        for f in os.listdir(carpeta):
+            f_low = f.lower()
+            if not f_low.endswith(".xlsx"):
+                continue
+            if "venta 2024" in f_low and "2025" in f_low:
+                ruta = os.path.join(carpeta, f)
+                break
+            if ("pestaña 6" in f_low or "pestana 6" in f_low) and ruta_pestana6 is None:
+                ruta_pestana6 = os.path.join(carpeta, f)
+        if ruta:
+            break
+    if not ruta and ruta_pestana6:
+        ruta = ruta_pestana6
+    if not ruta or not os.path.isfile(ruta):
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_excel(ruta, sheet_name=0)
+    except Exception:
+        return pd.DataFrame()
+
+    df.columns = _norm_cols(df.columns)
+    col_mes_num = _detectar_col(df, ["#Mes", "NumMes", "MesNum", "Nro Mes"])
+    col_mes_nom = _detectar_col(df, ["Mes", "Month"])
+    col_co = _detectar_col(df, ["Co", "Código", "Codigo", "StoreID", "Punto de venta"])
+    col_r24 = _detectar_col(df, ["Venta 2024", "Restaurante 2024", "Ventas 2024"])
+    col_tx24 = _detectar_col(df, ["Transacciónes 2024", "Transacciones 2024", "Transacciones2024"])
+    col_r25 = _detectar_col(df, ["Venta 2025", "Restaurante 2025", "Ventas 2025"])
+    col_tx25 = _detectar_col(df, ["Transacciónes 2025", "Transacciones 2025", "Transacciones2025"])
+
+    if not col_r24 or not col_tx24 or not col_r25 or not col_tx25:
+        return pd.DataFrame()
+
+    mes_col = col_mes_num if col_mes_num is not None else col_mes_nom
+    if mes_col is None:
+        return pd.DataFrame()
+
+    MESES_NOM = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+                 "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12}
+    df["_mes"] = df[mes_col].apply(lambda x: MESES_NOM.get(str(x).strip().lower(), None) if pd.notna(x) else None)
+    if df["_mes"].isna().all():
+        df["_mes"] = pd.to_numeric(df[mes_col], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["_mes"])
+    df["_mes"] = df["_mes"].astype(int)
+    df["_r24"] = _a_num(df[col_r24])
+    df["_tx24"] = _a_num(df[col_tx24])
+    df["_r25"] = _a_num(df[col_r25])
+    df["_tx25"] = _a_num(df[col_tx25])
+
+    # Mapear Co (o Punto de venta) a Sede_Nom y Grupo para poder filtrar como en el resto del informe
+    def _norm_co(c):
+        if pd.isna(c): return ""
+        c = str(c).strip().upper().lstrip("0") or "0"
+        try:
+            c = str(int(float(c)))
+        except (ValueError, TypeError):
+            pass
+        return c
+
+    try:
+        MAPEO = load_mapeo_sedes()
+        sede_to_code = {str(s).strip().upper().replace("Í", "I").replace("É", "E"): k for k, (g, s) in MAPEO.items() if s}
+    except Exception:
+        MAPEO = {}
+        sede_to_code = {}
+
+    if col_co is not None:
+        es_nombre = "punto de venta" in str(col_co).lower() or "punto de venta" in str(col_co)
+        if es_nombre:
+            def _nombre_a_codigo(v):
+                if pd.isna(v): return ""
+                n = str(v).strip().upper().replace("Í", "I").replace("É", "E").replace("Á", "A").replace("Ó", "O").replace("Ú", "U").replace("Ñ", "N")
+                return sede_to_code.get(n, _norm_co(v))
+            df["_codigo"] = df[col_co].map(_nombre_a_codigo)
+        else:
+            df["_codigo"] = df[col_co].map(_norm_co)
+        df["Sede_Nom"] = df["_codigo"].map(lambda c: MAPEO.get(c, ("OTRO", None))[1] if c else None)
+        df["Grupo"] = df["_codigo"].map(lambda c: MAPEO.get(c, (None, "OTRO"))[0] if c else None)
+    else:
+        df["_codigo"] = ""
+        df["Sede_Nom"] = pd.NA
+        df["Grupo"] = pd.NA
+
+    return df[["_mes", "_r24", "_tx24", "_r25", "_tx25", "Sede_Nom", "Grupo"]].copy()
+
+
 # --- FORMATOS ---
 def f_moneda(v): return f"${v:,.0f}".replace(",", ".") if pd.notna(v) else "$0"
 def f_entero(v): return f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "0"
@@ -720,6 +972,22 @@ def _fmt_unidades(n):
     """Formato cantidad/unidades: 33.060 (punto como separador de miles, sin $)."""
     if n is None or (isinstance(n, str) and n == "—"): return "—"
     try: return f"{int(round(float(n))):,}".replace(",", ".")
+    except (TypeError, ValueError): return "—"
+
+def _fmt_miles_pesos(v):
+    """Formato valor en miles de $: 113857 -> $ 113,9 (miles)."""
+    if v is None or (isinstance(v, str) and v == "—"): return "—"
+    try:
+        x = float(v) / 1000
+        return f"$ {x:,.1f}".replace(",", ".")
+    except (TypeError, ValueError): return "—"
+
+def _fmt_miles_unidades(n):
+    """Formato cantidad en miles: 20416 -> 20,4 (miles)."""
+    if n is None or (isinstance(n, str) and n == "—"): return "—"
+    try:
+        x = float(n) / 1000
+        return f"{x:,.1f}".replace(",", ".")
     except (TypeError, ValueError): return "—"
 
 def _esc(s):
@@ -1048,11 +1316,13 @@ def _main_impl():
     ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🔄 Refrescar datos", help="Tras ejecutar el ETL, pulsa aquí para cargar ventas y presupuesto de nuevo (evita caché)."):
+    if st.sidebar.button("🔄 Refrescar datos", help="Tras ejecutar el ETL o cambiar el Excel de pestaña 6, pulsa aquí para recargar (evita caché)."):
         try:
             load_ventas_operativas.clear()
             load_financiero_excel.clear()
             load_transacciones_hist_2025.clear()
+            load_pestana_6_excel.clear()
+            load_ventas_horarias_2026.clear()
         except Exception:
             pass
         st.rerun()
@@ -1193,13 +1463,14 @@ def _main_impl():
     else:
         titulo_fecha = ""
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "1. Ventas al público del día",
         "2. Comparativo 2026 vs 2025",
         "3. Presupuesto diario vs ventas al público",
         "4. Presupuesto acumulado vs ventas al público",
         "5. Transacciones 2026 vs 2025",
         "6. Tendencia 2025 vs 2026 (mes a mes)",
+        "7. Venta diaria comparativa",
     ])
 
     with tab1:
@@ -1554,50 +1825,425 @@ def _main_impl():
             st.altair_chart(ch, use_container_width=True)
         else:
             st.info("No hay datos 2026 por mes para mostrar la tendencia.")
-        # Tabla 1a.2 VR NETO VENTAS POS X AÑO Y MES: 2 filas × 14 columnas, sin scroll, ancho 100%
-        ventas_26 = {int(r["Mes"]): r["Venta_Real"] for _, r in mes_26.iterrows()}
-        ventas_25 = {int(r["Mes"]): r["Ventas"] for _, r in mes_25.iterrows()}
+        # Datos 2024 y 2025 desde Excel (venta 2024 y 2025.xlsx): filtrar por Restaurantes/Grupos y agregar por mes
+        df_excel_6 = load_pestana_6_excel()
+        excel_6_cargado = not df_excel_6.empty
+        if not df_excel_6.empty and "Sede_Nom" in df_excel_6.columns and df_excel_6["Sede_Nom"].notna().any():
+            df_excel_6 = df_excel_6[df_excel_6["Sede_Nom"].isin(s_filtro) & df_excel_6["Grupo"].isin(g_filtro)]
+        if not df_excel_6.empty:
+            agg_24_25 = df_excel_6.groupby("_mes", as_index=False).agg(
+                {"_r24": "sum", "_tx24": "sum", "_r25": "sum", "_tx25": "sum"}
+            )
+            ventas_24 = {int(r["_mes"]): float(r["_r24"]) for _, r in agg_24_25.iterrows()}
+            transacciones_24 = {int(r["_mes"]): float(r["_tx24"]) for _, r in agg_24_25.iterrows()}
+            ticket_24 = {int(r["_mes"]): (float(r["_r24"]) / float(r["_tx24"]) if r["_tx24"] and r["_tx24"] > 0 else None) for _, r in agg_24_25.iterrows()}
+            ventas_25_excel = {int(r["_mes"]): float(r["_r25"]) for _, r in agg_24_25.iterrows()}
+            transacciones_25_excel = {int(r["_mes"]): float(r["_tx25"]) for _, r in agg_24_25.iterrows()}
+            ticket_25_excel = {int(r["_mes"]): (float(r["_r25"]) / float(r["_tx25"]) if r["_tx25"] and r["_tx25"] > 0 else None) for _, r in agg_24_25.iterrows()}
+        else:
+            ventas_24 = {}
+            transacciones_24 = {}
+            ticket_24 = {}
+            ventas_25_excel = {}
+            transacciones_25_excel = {}
+            ticket_25_excel = {}
+
         cols_mes = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-        vals_26 = {c: int(round(ventas_26.get(i, 0) / 1e6, 0)) for i, c in enumerate(cols_mes, 1)}
-        vals_25 = {c: int(round(ventas_25.get(i, 0) / 1e6, 0)) for i, c in enumerate(cols_mes, 1)}
-        tot_26 = int(round(sum(ventas_26.values()) / 1e6, 0))
-        tot_25 = int(round(sum(ventas_25.values()) / 1e6, 0))
-        celdas_26 = [_fmt_millones_pesos(vals_26[c]) for c in cols_mes] + [_fmt_millones_pesos(tot_26)]
-        celdas_25 = [_fmt_millones_pesos(vals_25[c]) for c in cols_mes] + [_fmt_millones_pesos(tot_25)]
         headers = ["Año"] + cols_mes + ["Totales"]
-        st.markdown(f"**VR NETO VENTAS POS X AÑO Y MES** - (en Millones $)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        # Variación 2026 vs 2025 (solo comparamos 26 vs 25): texto y estilo semáforo por celda
+        def _fila_variacion_26_25(v25_d, v26_d):
+            celdas_texto = []
+            estilos = []
+            for i in range(1, 13):
+                v25 = v25_d.get(i) if i in v25_d else None
+                v26 = v26_d.get(i) if i in v26_d else None
+                v25_n = (v25 or 0) if v25 is not None else 0
+                v26_n = (v26 or 0) if v26 is not None else 0
+                if v25_n == 0 or v26 is None:
+                    celdas_texto.append("—")
+                    estilos.append("")
+                else:
+                    var = (v26_n - v25_n) / float(v25_n)
+                    txt = f"{var:+.1%} ▲" if var >= 0 else f"{var:+.1%} ▼"
+                    txt = txt.replace(".", ",")  # decimal con coma
+                    celdas_texto.append(txt)
+                    estilos.append(_cls_var(txt))
+            # Total: variación (suma 26 - suma 25) / suma 25
+            s25 = sum((v or 0) for v in v25_d.values())
+            s26 = sum((v or 0) for v in v26_d.values())
+            if s25 == 0:
+                celdas_texto.append("—")
+                estilos.append("")
+            else:
+                var_tot = (s26 - s25) / float(s25)
+                txt = f"{var_tot:+.1%} ▲" if var_tot >= 0 else f"{var_tot:+.1%} ▼"
+                txt = txt.replace(".", ",")
+                celdas_texto.append(txt)
+                estilos.append(_cls_var(txt))
+            return celdas_texto, estilos
+
         tbl_css = (
             "<style>.tbl-ventas-mes { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; "
             "font-size: 0.9rem; }.tbl-ventas-mes th, .tbl-ventas-mes td { border: 1px solid #ddd; padding: 6px 8px; "
             "text-align: right; overflow: hidden; text-overflow: ellipsis; }.tbl-ventas-mes th { background: #f0f2f6; "
             "text-align: center; font-weight: 600; }.tbl-ventas-mes td:first-child { text-align: center; font-weight: 500; }</style>"
         )
-        tbl_html = tbl_css + "<table class='tbl-ventas-mes'><thead><tr>"
-        tbl_html += "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
-        tbl_html += "<tr><td>2026</td>" + "".join(f"<td>{v}</td>" for v in celdas_26) + "</tr>"
-        tbl_html += "<tr><td>2025</td>" + "".join(f"<td>{v}</td>" for v in celdas_25) + "</tr>"
-        tbl_html += "</tbody></table>"
-        st.markdown(tbl_html, unsafe_allow_html=True)
-        # Tabla TICKET PROMEDIO 2026 por mes (1×14): valor $ por mes, total = YTD ventas/YTD transacciones
+        # Ventas por año (2024/2025 desde Excel filtrado; 2025 fallback desde df_fin; 2026 desde mes_26)
+        ventas_26 = {int(r["Mes"]): r["Venta_Real"] for _, r in mes_26.iterrows()}
+        ventas_25 = {int(r["Mes"]): r["Ventas"] for _, r in mes_25.iterrows()}
+        if ventas_25_excel:
+            ventas_25 = ventas_25_excel
         transacciones_26 = {int(r["Mes"]): r["Transacciones"] for _, r in mes_26.iterrows()}
+        transacciones_25 = transacciones_25_excel if transacciones_25_excel else ({} if not mes_25.empty else {})
+        if not transacciones_25 and not mes_25.empty:
+            transacciones_25 = {int(r["Mes"]): r["Transacciones"] for _, r in mes_25.iterrows()}
         ticket_26 = {int(r["Mes"]): r["Ticket"] for _, r in mes_26.iterrows() if pd.notna(r.get("Ticket"))}
-        sum_ventas = sum(ventas_26.values())
-        sum_tx = sum(transacciones_26.values())
-        ticket_ytd = (sum_ventas / sum_tx) if sum_tx and sum_tx > 0 else None
-        celdas_ticket = [f_moneda(ticket_26.get(i)) if ticket_26.get(i) and pd.notna(ticket_26.get(i)) else "$0" for i, _ in enumerate(cols_mes, 1)]
-        celdas_ticket += [f_moneda(ticket_ytd) if ticket_ytd is not None else "—"]
-        st.markdown(f"**TICKET PROMEDIO 2026 POR MES** (en $)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
-        tbl_ticket = "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
-        tbl_ticket += "<tr><td>2026</td>" + "".join(f"<td>{v}</td>" for v in celdas_ticket) + "</tr></tbody></table>"
-        st.markdown(tbl_css + tbl_ticket, unsafe_allow_html=True)
-        # Tabla TRANSACCIONES 2026 por mes (1×14): cantidad por mes, total = suma
-        vals_tx_26 = {c: int(transacciones_26.get(i, 0)) for i, c in enumerate(cols_mes, 1)}
-        tot_tx_26 = sum(transacciones_26.values())
-        celdas_tx = [_fmt_unidades(vals_tx_26[c]) for c in cols_mes] + [_fmt_unidades(tot_tx_26)]
-        st.markdown(f"**TRANSACCIONES 2026 POR MES**  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
-        tbl_tx = "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
-        tbl_tx += "<tr><td>2026</td>" + "".join(f"<td>{v}</td>" for v in celdas_tx) + "</tr></tbody></table>"
-        st.markdown(tbl_css + tbl_tx, unsafe_allow_html=True)
+        ticket_25 = ticket_25_excel if ticket_25_excel else {}
+        if not ticket_25 and not mes_25.empty:
+            ticket_25 = {int(r["Mes"]): r["Ticket"] for _, r in mes_25.iterrows() if pd.notna(r.get("Ticket"))}
+
+        # Tabla 1: VR NETO VENTAS POS X AÑO Y MES (3×15) — valor ÷ 1000, formato $ 17.343.321
+        def _fmt_ventas_miles(n):
+            """Formato ventas (valor ya ÷1000): $ 17.343.321 (punto miles, enteros)."""
+            if n is None or (isinstance(n, str) and n == "—"): return "—"
+            try:
+                x = int(round(float(n)))
+                return f"$ {x:,}".replace(",", ".")
+            except (TypeError, ValueError): return "—"
+
+        def _filas_ventas_miles(ventas_d):
+            vals = {c: round(ventas_d.get(i, 0) / 1000, 0) for i, c in enumerate(cols_mes, 1)}
+            tot = int(sum(vals[c] for c in cols_mes))  # total = suma de los 12 meses mostrados
+            return [_fmt_ventas_miles(vals[c]) for c in cols_mes] + [_fmt_ventas_miles(tot)]
+
+        filas_ventas = []
+        if ventas_24:
+            filas_ventas.append(("2024", _filas_ventas_miles(ventas_24)))
+        filas_ventas.append(("2025", _filas_ventas_miles(ventas_25)))
+        filas_ventas.append(("2026", _filas_ventas_miles(ventas_26)))
+        st.markdown(f"**VR NETO VENTAS POS X AÑO Y MES** - (valor ÷ 1000, en miles $)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        tbl_html = tbl_css + "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        for año, celdas in filas_ventas:
+            tbl_html += f"<tr><td>{año}</td>" + "".join(f"<td>{v}</td>" for v in celdas) + "</tr>"
+        # Fila 4: Variación 2026 vs 2025 (semáforo)
+        var_ventas_txt, var_ventas_style = _fila_variacion_26_25(ventas_25, ventas_26)
+        tbl_html += "<tr><td>Var. 26/25</td>"
+        for j, (v, style) in enumerate(zip(var_ventas_txt, var_ventas_style)):
+            tbl_html += f"<td style='{style}'>{v}</td>" if style else f"<td>{v}</td>"
+        tbl_html += "</tr></tbody></table>"
+        st.markdown(tbl_html, unsafe_allow_html=True)
+
+        # Tabla 2: TICKET PROMEDIO POR MES (3×15) — presentar el dato tal cual (sin ÷1000)
+        def _fmt_pesos_entero(v):
+            if v is None or (isinstance(v, str) and v == "—"): return "—"
+            try: return f"$ {int(round(float(v))):,}".replace(",", ".")
+            except (TypeError, ValueError): return "—"
+
+        def _filas_ticket(ticket_d, ventas_d, tx_d):
+            celdas = []
+            for i in range(1, 13):
+                v = ticket_d.get(i) if ticket_d.get(i) and pd.notna(ticket_d.get(i)) else None
+                celdas.append(_fmt_pesos_entero(v) if v is not None else "—")
+            sum_v = sum(ventas_d.values()) if ventas_d else 0
+            sum_t = sum(tx_d.values()) if tx_d else 0
+            ytd = (sum_v / sum_t) if sum_t and sum_t > 0 else None
+            celdas.append(_fmt_pesos_entero(ytd) if ytd is not None else "—")
+            return celdas
+
+        filas_ticket = []
+        if ticket_24 or ventas_24 or transacciones_24:
+            filas_ticket.append(("2024", _filas_ticket(ticket_24, ventas_24, transacciones_24)))
+        filas_ticket.append(("2025", _filas_ticket(ticket_25, ventas_25, transacciones_25)))
+        filas_ticket.append(("2026", _filas_ticket(ticket_26, ventas_26, transacciones_26)))
+        st.markdown(f"**TICKET PROMEDIO POR MES** ($)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        tbl_ticket = tbl_css + "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        for año, celdas in filas_ticket:
+            tbl_ticket += f"<tr><td>{año}</td>" + "".join(f"<td>{v}</td>" for v in celdas) + "</tr>"
+        var_ticket_txt, var_ticket_style = _fila_variacion_26_25(ticket_25, ticket_26)
+        tbl_ticket += "<tr><td>Var. 26/25</td>"
+        for j, (v, style) in enumerate(zip(var_ticket_txt, var_ticket_style)):
+            tbl_ticket += f"<td style='{style}'>{v}</td>" if style else f"<td>{v}</td>"
+        tbl_ticket += "</tr></tbody></table>"
+        st.markdown(tbl_ticket, unsafe_allow_html=True)
+
+        # Tabla 3: TRANSACCIONES POR MES (3×15) — mismo criterio: datos del Excel filtrados, suma por mes, total = suma de los 12 meses
+        def _filas_transacciones(tx_d):
+            vals = {c: tx_d.get(i, 0) for i, c in enumerate(cols_mes, 1)}
+            tot = int(sum(vals[c] for c in cols_mes))  # total = suma de los 12 meses mostrados (como ventas y ticket)
+            return [_fmt_unidades(vals[c]) for c in cols_mes] + [_fmt_unidades(tot)]
+
+        filas_tx = []
+        if transacciones_24:
+            filas_tx.append(("2024", _filas_transacciones(transacciones_24)))
+        filas_tx.append(("2025", _filas_transacciones(transacciones_25)))
+        filas_tx.append(("2026", _filas_transacciones(transacciones_26)))
+        st.markdown(f"**TRANSACCIONES POR MES** (suma por mes)  Del: {f_fin.strftime('%d/%m/%Y') if f_fin else '—'}.**")
+        tbl_tx = tbl_css + "<table class='tbl-ventas-mes'><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        for año, celdas in filas_tx:
+            tbl_tx += f"<tr><td>{año}</td>" + "".join(f"<td>{v}</td>" for v in celdas) + "</tr>"
+        var_tx_txt, var_tx_style = _fila_variacion_26_25(transacciones_25, transacciones_26)
+        tbl_tx += "<tr><td>Var. 26/25</td>"
+        for j, (v, style) in enumerate(zip(var_tx_txt, var_tx_style)):
+            tbl_tx += f"<td style='{style}'>{v}</td>" if style else f"<td>{v}</td>"
+        tbl_tx += "</tr></tbody></table>"
+        st.markdown(tbl_tx, unsafe_allow_html=True)
+        if excel_6_cargado:
+            st.caption("Datos 2024 y 2025 desde **venta 2024 y 2025.xlsx** (o pestaña 6.xlsx); se aplican los mismos filtros de Restaurantes y Grupos. Ventas = valor ÷ 1000 (en miles $); ticket promedio = dato tal cual ($); transacciones = suma por mes. 2026 desde base operativa.")
+        else:
+            st.caption("Para incluir 2024 y 2025: añade **venta 2024 y 2025.xlsx** (o pestaña 6.xlsx) en la raíz o fuentes_excel. Columnas: Co o Punto de venta (para filtrar), Mes/#Mes, Venta 2024 (F), Venta 2025 (I), Transacciónes 2024/2025.")
+
+    with tab7:
+        st.markdown("<p class='section-title'>Venta diaria comparativa</p>", unsafe_allow_html=True)
+        _fmax = df_op["Fecha"].max()
+        if hasattr(_fmax, "date"):
+            _fmax = _fmax.date()
+        _fmin = df_op["Fecha"].min()
+        if hasattr(_fmin, "date"):
+            _fmin = _fmin.date()
+        fecha_default = f_fin or f_inicio or _fmax
+        if fecha_default is None:
+            fecha_default = _fmax
+        if hasattr(fecha_default, "date"):
+            fecha_default = fecha_default.date()
+        if "p7_fecha" not in st.session_state:
+            st.session_state["p7_fecha"] = min(fecha_default, _fmax)
+        fecha_sel = st.session_state["p7_fecha"]
+
+        modo_comp = st.radio(
+            "Comparar contra:",
+            options=["Día anterior", "4 semanas anteriores"],
+            horizontal=True,
+            key="p7_modo",
+        )
+        # Navegación día anterior / siguiente
+        col_prev, col_fecha, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("◀ Día anterior", key="p7_prev"):
+                st.session_state["p7_fecha"] = max(_fmin, fecha_sel - timedelta(days=1))
+                st.rerun()
+        with col_next:
+            if st.button("Día siguiente ▶", key="p7_next"):
+                st.session_state["p7_fecha"] = min(_fmax, fecha_sel + timedelta(days=1))
+                st.rerun()
+        with col_fecha:
+            st.markdown(
+                f"<div style='text-align:center; font-weight:600; font-size:1.05rem; color:#212529;'>"
+                f"{DIAS_SEMANA[fecha_sel.weekday()]} {fecha_sel.day} de {MESES_ES[fecha_sel.month]} de {fecha_sel.year}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if modo_comp == "Día anterior":
+            fecha_ref = fecha_sel - timedelta(days=7)
+            etiqueta_ref = "mismo día semana anterior"
+        else:
+            fecha_ref = fecha_sel - timedelta(days=28)
+            etiqueta_ref = "4 semanas anteriores"
+        texto_actual = f"{DIAS_SEMANA[fecha_sel.weekday()]} {fecha_sel.day} de {MESES_ES[fecha_sel.month]} de {fecha_sel.year}"
+        texto_ref = f"{DIAS_SEMANA[fecha_ref.weekday()]} {fecha_ref.day} de {MESES_ES[fecha_ref.month]} de {fecha_ref.year}"
+        st.markdown(
+            f"<div style='background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; "
+            "padding: 12px 16px; margin: 8px 0 16px 0; border-left: 4px solid #2e86ab;'>"
+            f"<span style='color:#495057;font-size:0.95rem;'>Comparando: <strong>{texto_actual}</strong> vs <strong>{texto_ref}</strong> "
+            f"<span style='color:#6c757d;'>({etiqueta_ref})</span></span></div>",
+            unsafe_allow_html=True,
+        )
+
+        def _resumen_p7(fecha):
+            df_base = df_op[df_op["Fecha"] == fecha].copy()
+            if df_base.empty:
+                return 0.0, 0.0, 0.0
+            if "Sede_Nom" not in df_base.columns or "Grupo" not in df_base.columns:
+                df_base["Sede_Nom"] = df_base["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1])
+                df_base["Grupo"] = df_base["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0])
+            df_base = df_base[df_base["Sede_Nom"].isin(s_filtro) & df_base["Grupo"].isin(g_filtro)]
+            if df_base.empty:
+                return 0.0, 0.0, 0.0
+            df_base = df_base.copy()
+            df_base["Venta_Real"] = df_base["VlrBruto"] - df_base["VlrTotalDesc"].abs()
+            v = float(df_base["Venta_Real"].sum())
+            t = float(df_base["Cantidad_Transacciones"].sum()) if "Cantidad_Transacciones" in df_base.columns else float(len(df_base))
+            tk = (v / t) if t > 0 else 0.0
+            return v, t, tk
+
+        v_act, tr_act, tk_act = _resumen_p7(fecha_sel)
+        v_ref, tr_ref, tk_ref = _resumen_p7(fecha_ref)
+
+        def _var_pct(act, ref):
+            return None if ref == 0 else (act / ref) - 1.0
+
+        var_v = _var_pct(v_act, v_ref)
+        var_tr = _var_pct(tr_act, tr_ref)
+        var_tk = _var_pct(tk_act, tk_ref)
+
+        def _var_str(var):
+            if var is None:
+                return "—"
+            return f"{var:+.1%}".replace(".", ",") + (" ▲" if var >= 0 else " ▼")
+
+        lbl_actual = f"{DIAS_SEMANA[fecha_sel.weekday()][:3]} {fecha_sel.day}/{fecha_sel.month}"
+        lbl_ref = f"{DIAS_SEMANA[fecha_ref.weekday()][:3]} {fecha_ref.day}/{fecha_ref.month}"
+
+        # Resumen ejecutivo: conclusión en una mirada + impacto en pesos (lo que un CEO quiere ver primero)
+        _delta_ventas = v_act - v_ref
+        _sube_baja = "por encima" if (var_v or 0) >= 0 else "por debajo"
+        _conclusion = f"Hoy ({lbl_actual}) estás <strong>{_sube_baja}</strong> del día de referencia ({lbl_ref}) en ventas."
+        if var_v is not None and var_tr is not None and var_tk is not None:
+            _todas = [var_v, var_tr, var_tk]
+            _positivas = sum(1 for x in _todas if x is not None and x >= 0)
+            if _positivas == 3:
+                _conclusion = f"<strong>{lbl_actual}</strong> ganó en las 3 métricas vs {lbl_ref}."
+            elif _positivas == 0:
+                _conclusion = f"<strong>{lbl_ref}</strong> ganó en las 3 métricas. Hoy ({lbl_actual}) está por debajo en ventas, transacciones y ticket."
+            else:
+                _conclusion = f"Resultado mixto: {_positivas} métrica(s) arriba y {3 - _positivas} abajo vs {lbl_ref}."
+        _color_v = "#0d8050" if (var_v or 0) >= 0 else "#c53030"
+        _color_tr = "#0d8050" if (var_tr or 0) >= 0 else "#c53030"
+        _color_tk = "#0d8050" if (var_tk or 0) >= 0 else "#c53030"
+        _txt_v = _var_str(var_v)
+        _txt_tr = _var_str(var_tr)
+        _txt_tk = _var_str(var_tk)
+        st.markdown(
+            "<div style='background: #fff; border-radius: 12px; padding: 16px 20px; margin: 0 0 16px 0; "
+            "border: 1px solid #e9ecef; box-shadow: 0 2px 8px rgba(0,0,0,0.06);'>"
+            "<p style='margin: 0 0 12px 0; font-size: 1rem; color: #212529;'>"
+            "📌 <strong>En una mirada:</strong> "
+            + _conclusion + "</p>"
+            + ("<p style='margin: 0 0 8px 0; font-size: 0.9rem; color: #495057;'>Diferencia en ventas: <strong style='color:" + (_color_v if _delta_ventas >= 0 else "#c53030") + "'>" + f_moneda(abs(_delta_ventas)) + (" más" if _delta_ventas >= 0 else " menos") + "</strong> vs referencia.</p>" if _delta_ventas != 0 else "")
+            + "<div style='display: flex; gap: 24px; flex-wrap: wrap; margin-top: 12px;'>"
+            + f"<span style='font-size: 1.1rem;'><strong>Ventas</strong> <span style='color:{_color_v}; font-weight: 700;'>{_txt_v}</span></span>"
+            + f"<span style='font-size: 1.1rem;'><strong>Transacciones</strong> <span style='color:{_color_tr}; font-weight: 700;'>{_txt_tr}</span></span>"
+            + f"<span style='font-size: 1.1rem;'><strong>Ticket prom.</strong> <span style='color:{_color_tk}; font-weight: 700;'>{_txt_tk}</span></span>"
+            + "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        # Gráfico de variación % (respuesta directa: ¿cómo salimos vs referencia?)
+        _pct_v = (var_v * 100) if var_v is not None else 0
+        _pct_tr = (var_tr * 100) if var_tr is not None else 0
+        _pct_tk = (var_tk * 100) if var_tk is not None else 0
+        df_var = pd.DataFrame([
+            {"Metrica": "Ventas", "Variacion_pct": _pct_v},
+            {"Metrica": "Transacciones", "Variacion_pct": _pct_tr},
+            {"Metrica": "Ticket promedio", "Variacion_pct": _pct_tk},
+        ])
+        _ymax = max(15, abs(_pct_v), abs(_pct_tr), abs(_pct_tk)) * 1.2
+        ch_var = (
+            alt.Chart(df_var)
+            .mark_bar(size=40)
+            .encode(
+                x=alt.X("Metrica:N", title="", sort=None),
+                y=alt.Y("Variacion_pct:Q", title="Variación % vs día de referencia", scale=alt.Scale(domain=[-_ymax, _ymax]), axis=alt.Axis(format="+.1f")),
+                color=alt.condition(
+                    alt.datum.Variacion_pct >= 0,
+                    alt.value("#0d8050"),
+                    alt.value("#c53030"),
+                ),
+                tooltip=[alt.Tooltip("Metrica:N"), alt.Tooltip("Variacion_pct:Q", format="+.1f", title="Variación %")],
+            )
+            .properties(height=220, title="Variación vs día de referencia")
+            .configure_axis(gridColor="#e9ecef")
+        )
+        st.altair_chart(ch_var, use_container_width=True)
+        st.markdown("---")
+        st.markdown("**Comparativo en nivel** (proporción dentro de cada métrica):")
+        # Una sola gráfica con los 6 datos: normalizado por métrica (el mayor = 100) para que se vea proporcionado
+        def _norm(act, ref):
+            m = max(act, ref) if (act or ref) else 1
+            return (act / m * 100) if act else 0, (ref / m * 100) if ref else 0
+
+        v_na, v_nr = _norm(v_act, v_ref)
+        tr_na, tr_nr = _norm(tr_act, tr_ref)
+        tk_na, tk_nr = _norm(tk_act, tk_ref)
+
+        # Tarjetas de resumen por día
+        card_css = (
+            "<style>.p7-card { background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); "
+            "padding: 16px 20px; border: 1px solid #e9ecef; } "
+            ".p7-card h4 { margin: 0 0 12px 0; font-size: 0.95rem; color: #2e86ab; } "
+            ".p7-card p { margin: 4px 0; font-size: 0.85rem; color: #495057; } "
+            ".p7-card strong { color: #212529; }</style>"
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(
+                card_css
+                + f"<div class='p7-card'><h4>📅 {lbl_actual}</h4>"
+                + f"<p>Ventas: <strong>{f_moneda(v_act)}</strong></p>"
+                + f"<p>Transacciones: <strong>{f_entero(tr_act)}</strong></p>"
+                + f"<p>Ticket prom.: <strong>{f_moneda(tk_act)}</strong></p></div>",
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                card_css
+                + f"<div class='p7-card'><h4>📅 {lbl_ref}</h4>"
+                + f"<p>Ventas: <strong>{f_moneda(v_ref)}</strong></p>"
+                + f"<p>Transacciones: <strong>{f_entero(tr_ref)}</strong></p>"
+                + f"<p>Ticket prom.: <strong>{f_moneda(tk_ref)}</strong></p></div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        df_chart = pd.DataFrame([
+            {"Etiqueta": f"Ventas · {lbl_actual}", "Día": lbl_actual, "Valor_norm": v_na, "Valor_real": v_act, "Métrica": "Ventas"},
+            {"Etiqueta": f"Ventas · {lbl_ref}", "Día": lbl_ref, "Valor_norm": v_nr, "Valor_real": v_ref, "Métrica": "Ventas"},
+            {"Etiqueta": f"Transacciones · {lbl_actual}", "Día": lbl_actual, "Valor_norm": tr_na, "Valor_real": tr_act, "Métrica": "Transacciones"},
+            {"Etiqueta": f"Transacciones · {lbl_ref}", "Día": lbl_ref, "Valor_norm": tr_nr, "Valor_real": tr_ref, "Métrica": "Transacciones"},
+            {"Etiqueta": f"Ticket prom. · {lbl_actual}", "Día": lbl_actual, "Valor_norm": tk_na, "Valor_real": tk_act, "Métrica": "Ticket prom."},
+            {"Etiqueta": f"Ticket prom. · {lbl_ref}", "Día": lbl_ref, "Valor_norm": tk_nr, "Valor_real": tk_ref, "Métrica": "Ticket prom."},
+        ])
+        ch_bars = (
+            alt.Chart(df_chart)
+            .mark_bar(size=32)
+            .encode(
+                x=alt.X("Etiqueta:N", sort=None, title="", axis=alt.Axis(labelAngle=-25, labelFontSize=11)),
+                y=alt.Y("Valor_norm:Q", title="Proporción (máx del par = 100%)", scale=alt.Scale(domain=[0, 105]), axis=alt.Axis(gridColor="#e9ecef", tickCount=6)),
+                color=alt.Color("Día:N", legend=alt.Legend(title="Día", orient="top"), scale=alt.Scale(range=["#2e86ab", "#e94f37"])),
+                tooltip=[
+                    alt.Tooltip("Etiqueta:N", title=""),
+                    alt.Tooltip("Valor_norm:Q", title="Proporción", format=",.0f"),
+                    alt.Tooltip("Valor_real:Q", title="Valor", format=",.0f"),
+                ],
+            )
+            .properties(height=340, title=alt.TitleParams("Comparativo: Ventas, Transacciones y Ticket promedio", fontSize=16, fontWeight=600))
+            .configure_view(strokeWidth=0)
+            .configure_axis(domainColor="#dee2e6", labelColor="#495057", titleFontSize=12)
+        )
+        st.altair_chart(ch_bars, use_container_width=True)
+
+        # Tabla comparativa (estilo card)
+        tbl_comp_css = (
+            "<style>"
+            ".wrap-tbl-comp { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 0; overflow: hidden; margin: 16px 0; border: 1px solid #e9ecef; }"
+            ".tbl-comp-dia { width: 100%; max-width: 100%; table-layout: auto; border-collapse: collapse; font-size: 0.95rem; }"
+            ".tbl-comp-dia th, .tbl-comp-dia td { padding: 12px 16px; white-space: nowrap; text-align: right; border-bottom: 1px solid #e9ecef; }"
+            ".tbl-comp-dia th { background: linear-gradient(180deg, #2e86ab 0%, #257a9e 100%); color: #fff; font-weight: 600; text-align: center; font-size: 0.9rem; }"
+            ".tbl-comp-dia td:first-child { text-align: left; font-weight: 600; color: #495057; }"
+            ".tbl-comp-dia tbody tr:hover { background: #f8f9fa; }"
+            ".tbl-comp-dia tbody tr:last-child td { border-bottom: none; }"
+            "</style>"
+        )
+        html_comp = (
+            tbl_comp_css
+            + "<div class='wrap-tbl-comp'><table class='tbl-comp-dia'><thead><tr>"
+            + f"<th>Métrica</th><th>{_esc(lbl_actual)}</th><th>{_esc(lbl_ref)}</th><th>Variación</th>"
+            + "</tr></thead><tbody>"
+        )
+        for label, val_act, val_ref, var in [
+            ("Ventas", f_moneda(v_act), f_moneda(v_ref), var_v),
+            ("Transacciones", f_entero(tr_act), f_entero(tr_ref), var_tr),
+            ("Ticket promedio", f_moneda(tk_act), f_moneda(tk_ref), var_tk),
+        ]:
+            var_txt = _var_str(var)
+            var_style = _cls_var(var_txt)
+            html_comp += f"<tr><td>{_esc(label)}</td><td>{_esc(val_act)}</td><td>{_esc(val_ref)}</td><td style='{var_style}'>{_esc(var_txt)}</td></tr>"
+        html_comp += "</tbody></table></div>"
+        st.markdown(html_comp, unsafe_allow_html=True)
+
+        st.caption(
+            "Fuente: ventas al público (raw_ventas_2026 + transacciones). "
+            "Se respetan los filtros de Restaurantes y Grupos del panel izquierdo."
+        )
 
 if __name__ == "__main__":
     main()
