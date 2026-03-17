@@ -1311,19 +1311,17 @@ def _main_impl():
     f_sel = f_inicio  # para títulos y acumulado "hasta" usamos f_fin donde aplique
 
     sedes_map = sorted(list(set([v[1] for v in MAPEO_SEDES.values()])))
-    s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key="p_sedes")
+    s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key=f"p_sedes_{_refresh}")
     grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
-    g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key="p_grupos")
+    g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key=f"p_grupos_{_refresh}")
     
     st.sidebar.markdown("---")
     if st.sidebar.button(
         "🔄 Refrescar datos",
         help="Vuelve al reporte por defecto: última fecha con datos, todos los restaurantes y grupos (y recarga cachés).",
     ):
-        # Resetear filtros y fechas al estado inicial (nueva key de fechas para que los date_input se recreen con u_f)
+        # Resetear filtros y fechas: _refresh hace que los widgets (fechas, restaurantes, grupos) se recreen con valores por defecto
         st.session_state["_refresh"] = st.session_state.get("_refresh", 0) + 1
-        st.session_state["p_sedes"] = sedes_map
-        st.session_state["p_grupos"] = grupos_map
         # Pestaña 7: volver a última fecha con datos
         st.session_state["p7_fecha"] = u_f
         try:
