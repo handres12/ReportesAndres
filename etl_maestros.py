@@ -49,7 +49,7 @@ def extraer_maestros():
         except Exception as e:
             print(f"  -> Error en {tabla_origen}: {e}")
 
-    # 2. Transacciones: facturas (InvoiceID) de Invoice desde 2026-01-01, por día por tienda → raw_invoice_2026
+    # 2. Transacciones: facturas (InvoiceID) de Invoice desde 2026-01-01, por día por tienda -> raw_invoice_2026
     print("\nExtrayendo Invoice (facturas por día por tienda, desde 2026-01-01)...")
     
     with SessionLocalDB() as session:
@@ -74,7 +74,7 @@ def extraer_maestros():
             session.commit()
 
     try:
-        # 2.a) Traer facturas (InvoiceID) de Invoice → raw_invoice_2026. La app agrega COUNT(InvoiceID) por día y tienda.
+        # 2.a) Traer facturas (InvoiceID) de Invoice -> raw_invoice_2026. La app agrega COUNT(InvoiceID) por día y tienda.
         query_invoice = f"""
         SELECT * FROM Invoice 
         WHERE BusinessDate >= '{fecha_inicio_inv}' AND BusinessDate < '2027-01-01'
@@ -87,7 +87,7 @@ def extraer_maestros():
             df_invoice = df_invoice.dropna(subset=['InvoiceID', 'StoreID'])
             df_invoice = df_invoice.drop_duplicates(subset=['InvoiceID', 'StoreID'])
             df_invoice.to_sql('raw_invoice_2026', con=engine_local, if_exists='append', index=False)
-            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas → transacciones por día por tienda.")
+            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas -> transacciones por dia por tienda.")
 
         # 2.b) Opcional: tabla auxiliar venta_horaria_2026 (solo si la app usa ventas/transacciones por hora).
         print("\nActualizando tabla auxiliar venta_horaria_2026...")

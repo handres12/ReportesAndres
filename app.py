@@ -718,6 +718,55 @@ def load_financiero_excel():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=120)
+def load_ventas_2025_ftp():
+    """
+    Ventas 2025 por día por tienda desde FTP, persistidas en SQLite.
+
+    Fuente preferida: tabla dedicada `raw_ventas_2025` (si existe).
+    Fallback: `hechos_excel_diario` con `Escenario='Historico_Diario_FTP'` (si ya está cargado).
+    """
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            try:
+                df = pd.read_sql(
+                    text(
+                        """
+                        SELECT
+                            LTRIM(UPPER(TRIM(CAST(StoreID_External AS TEXT))), '0') AS codigo_sede_crudo,
+                            CAST(Fecha AS DATE) AS Fecha,
+                            CAST(Ventas AS FLOAT) AS Ventas
+                        FROM raw_ventas_2025
+                        WHERE DATE(Fecha) >= '2025-01-01' AND DATE(Fecha) < '2026-01-01'
+                        """
+                    ),
+                    con=conn,
+                )
+            except Exception:
+                df = pd.read_sql(
+                    text(
+                        """
+                        SELECT
+                            LTRIM(UPPER(TRIM(CAST(StoreID_External AS TEXT))), '0') AS codigo_sede_crudo,
+                            CAST(Fecha AS DATE) AS Fecha,
+                            CAST(Ventas AS FLOAT) AS Ventas
+                        FROM hechos_excel_diario
+                        WHERE Escenario = 'Historico_Diario_FTP'
+                          AND DATE(Fecha) >= '2025-01-01' AND DATE(Fecha) < '2026-01-01'
+                        """
+                    ),
+                    con=conn,
+                )
+        if df.empty:
+            return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
+        df["Fecha"] = pd.to_datetime(df["Fecha"]).dt.date
+        df["codigo_sede_crudo"] = df["codigo_sede_crudo"].astype(str).str.strip().str.upper().str.lstrip("0")
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
+
+
 @st.cache_data(ttl=600)
 def load_transacciones_hist_2025():
     """
@@ -1348,8 +1397,15 @@ def _main_impl():
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
 
-    # Comparativo 2025: datos del Excel descargado del FTP (Historico_Diario), cargado con listar_ftp_ventas_2025.py --cargar
-    df_h_raw = df_fin[(df_fin['Fecha'] >= f_inicio_25) & (df_fin['Fecha'] <= f_fin_25) & (df_fin['Escenario'].str.contains('Historico', na=False))].copy()
+    # Comparativo 2025 (pestaña 2): usar tabla dedicada raw_ventas_2025 (cargada desde FTP).
+    # Esto evita depender de hechos_excel_diario y deja la lógica estable.
+    df_25 = load_ventas_2025_ftp()
+    df_h_raw = df_25[(df_25['Fecha'] >= f_inicio_25) & (df_25['Fecha'] <= f_fin_25)].copy()
+    if not df_h_raw.empty:
+        df_h_raw["codigo_sede_crudo"] = df_h_raw["codigo_sede_crudo"].astype(str).str.strip().str.upper().str.lstrip("0")
+        df_h_raw["Ventas"] = pd.to_numeric(df_h_raw["Ventas"], errors="coerce").fillna(0.0)
+    else:
+        df_h_raw = pd.DataFrame(columns=["codigo_sede_crudo", "Fecha", "Ventas"])
     if not df_h_raw.empty:
         df_h_raw['Sede_Nom'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
         df_h_raw['Grupo'] = df_h_raw['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
@@ -1524,6 +1580,8 @@ def _main_impl():
         if df_r.empty:
             st.info("No hay ventas al público 2026 para el día seleccionado.")
         else:
+            if df_h.empty:
+                st.warning("No hay datos 2025 cargados en la tabla local `raw_ventas_2025`. Ejecuta `python etl_ftp_ventas_2025.py` (requiere acceso al FTP).")
             codigos_r = set(df_r['codigo_sede_crudo'])
             codigos_h = set(df_h['codigo_sede_crudo']) if not df_h.empty else set()
             codigos = codigos_r | codigos_h

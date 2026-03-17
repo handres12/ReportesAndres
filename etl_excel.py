@@ -321,6 +321,9 @@ def ejecutar_etl():
         return
     if not ruta_2025:
         print("[!] No se encontro archivo 2025 por dia; se conservara Historico_Diario ya cargado en BD (ej. desde FTP).")
+    df_2025_diario = procesar_diario_2025(ruta_2025) if ruta_2025 else pd.DataFrame()
+    if not df_2025_diario.empty:
+        print(f"[OK] Historico 2025 por dia (CSV/Micros): {len(df_2025_diario)} registros (Escenario=Historico_Diario).")
 
     df_pres_mensual = procesar_presupuesto(ruta_presup)
     df_pres_diarizado = diarizar_mensual(df_pres_mensual, 'Presupuesto_Diarizado')
@@ -334,8 +337,6 @@ def ejecutar_etl():
         df_hist_mensual = pd.DataFrame()
         
     df_hist_diarizado = diarizar_mensual(df_hist_mensual, 'Historico_Diarizado')
-    # Historico_Diario (comparativo 2025) solo se carga con etl_ftp_ventas_2025.py / listar_ftp --cargar (PLAZAS).
-    # No usar CSV 2025 aquí para no borrar los datos del FTP.
     ruta_ventas_mes_ano = obtener_ruta_ventas_mes_ano()
     df_2025_excel = procesar_historico_2025_desde_mensual(ruta_ventas_mes_ano) if ruta_ventas_mes_ano else pd.DataFrame()
     if not df_2025_excel.empty:
@@ -344,7 +345,7 @@ def ejecutar_etl():
     df_pp_2026_dia = procesar_presupuesto_diario_2026(ruta_pp_2026_dia) if ruta_pp_2026_dia else pd.DataFrame()
     if not df_pp_2026_dia.empty:
         print(f"[OK] Presupuesto diario 2026 (PP x día): {len(df_pp_2026_dia)} registros.")
-    partes = [df_hist_diarizado, df_pres_diarizado, df_pp_2026_dia, df_2025_excel]
+    partes = [df_hist_diarizado, df_pres_diarizado, df_pp_2026_dia, df_2025_excel, df_2025_diario]
     df_final = pd.concat([p for p in partes if not p.empty], ignore_index=True)
     if df_final.empty:
         return
@@ -370,8 +371,9 @@ def ejecutar_etl():
 
     df_final['Agrupacion'] = df_final.apply(asignar_grupo_final, axis=1)
 
-    # Solo reemplazar los escenarios que estamos cargando. NO borrar Historico_Diario (lo carga solo el FTP; tiene PLAZAS).
-    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026', 'Historico_2025_Excel']
+    # Solo reemplazar los escenarios que estamos cargando.
+    # Nota: Historico_Diario_FTP lo carga etl_ftp_ventas_2025.py (no se borra aquí).
+    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026', 'Historico_2025_Excel', 'Historico_Diario']
     placeholders = ", ".join([f"'{e}'" for e in escenarios_a_borrar])
     with engine_local.connect() as conn:
         conn.execute(text(f"DELETE FROM hechos_excel_diario WHERE Escenario IN ({placeholders})"))
