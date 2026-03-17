@@ -1310,13 +1310,22 @@ def _main_impl():
     f_sel = f_inicio  # para títulos y acumulado "hasta" usamos f_fin donde aplique
 
     sedes_map = sorted(list(set([v[1] for v in MAPEO_SEDES.values()])))
-    s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map)
+    s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key="p_sedes")
     grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
-    g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map)
-    ocultar_sin_venta = st.sidebar.checkbox("Ocultar sedes sin venta real", value=True)
+    g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key="p_grupos")
 
     st.sidebar.markdown("---")
-    if st.sidebar.button("🔄 Refrescar datos", help="Tras ejecutar el ETL o cambiar el Excel de pestaña 6, pulsa aquí para recargar (evita caché)."):
+    if st.sidebar.button(
+        "🔄 Refrescar datos",
+        help="Vuelve al reporte por defecto: última fecha con datos, todos los restaurantes y grupos (y recarga cachés).",
+    ):
+        # Resetear filtros y fechas al estado inicial
+        st.session_state["f_desde"] = u_f
+        st.session_state["f_hasta"] = u_f
+        st.session_state["p_sedes"] = sedes_map
+        st.session_state["p_grupos"] = grupos_map
+        # Pestaña 7: volver a última fecha con datos
+        st.session_state["p7_fecha"] = u_f
         try:
             load_ventas_operativas.clear()
             load_financiero_excel.clear()
@@ -1326,19 +1335,11 @@ def _main_impl():
         except Exception:
             pass
         st.rerun()
-    alinear = _sidebar_toggle("Lunes vs Lunes (comparativo 2025)", value=True)
+    # Flag global para el comparativo 2025 (se controla visualmente en la pestaña 3)
+    alinear = st.session_state.get("p3_lunes_vs_lunes", True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
-    # Pestaña 4: true = mismo rango (1-X ppto vs 1-X ventas); false = presupuesto total mes vs ventas acum 1-X
-    ppto_acum_mismo_rango = _sidebar_toggle("Ppto acumulado: mismo rango (1-X vs 1-X)", value=True)
-    if f_inicio and f_fin:
-        if f_inicio == f_fin:
-            d1 = f"{DIAS_SEMANA[f_inicio.weekday()]} {f_inicio.day} de {MESES_ES[f_inicio.month]} de {f_inicio.year}"
-            d2 = f"{DIAS_SEMANA[f_inicio_25.weekday()]} {f_inicio_25.day} de {MESES_ES[f_inicio_25.month]} de {f_inicio_25.year}"
-        else:
-            d1 = f"{DIAS_SEMANA[f_inicio.weekday()]} {f_inicio.day} al {DIAS_SEMANA[f_fin.weekday()]} {f_fin.day} de {MESES_ES[f_inicio.month]} de {f_inicio.year}"
-            d2 = f"{DIAS_SEMANA[f_inicio_25.weekday()]} {f_inicio_25.day} al {DIAS_SEMANA[f_fin_25.weekday()]} {f_fin_25.day} de {MESES_ES[f_inicio_25.month]} de {f_inicio_25.year}"
-        st.sidebar.caption(f"Comparando: **{d1}** / **{d2}**")
+    # La opción \"Ppto acumulado: mismo rango\" ahora vive dentro de la pestaña 4 (no en el sidebar).
 
     # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
     df_r = df_op[(df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)].copy()
@@ -1577,6 +1578,13 @@ def _main_impl():
 
     with tab3:
         st.markdown(f'<p class="section-title">Presupuesto diario vs ventas al público — {titulo_fecha}</p>', unsafe_allow_html=True)
+        # Control visual de Lunes vs Lunes solo en esta pestaña (pero afecta todo el comparativo 2025)
+        _alinear_ui = st.toggle(
+            "Lunes vs Lunes (comparativo 2025)",
+            value=st.session_state.get("p3_lunes_vs_lunes", True),
+            key="p3_lunes_vs_lunes",
+            help="Si está activo, compara lunes vs lunes (mismo día de la semana). Si no, compara misma fecha de calendario (ej. 15/03/2026 vs 15/03/2025).",
+        )
         codigos = set(df_r['codigo_sede_crudo']).union(set(df_p['codigo_sede_crudo']) if not df_p.empty else set())
         filas3 = []
         for grp in ORDEN_GRUPOS:
@@ -1632,6 +1640,13 @@ def _main_impl():
 
     with tab4:
         st.markdown(f'<p class="section-title">Ppto acumulado vs ventas al público acumuladas — MES DE {MESES_ES[f_fin.month].upper() if f_fin else ""}</p>', unsafe_allow_html=True)
+        # Esta opción solo aplica a este informe: mismo rango 1-X vs 1-X o presupuesto total mes vs ventas acum. 1-X
+        ppto_acum_mismo_rango = st.toggle(
+            "Ppto acumulado: mismo rango (1-X vs 1-X)",
+            value=True,
+            key="p4_ppto_acum_mismo_rango",
+            help="Si está activo: presupuesto acumulado 1-X vs ventas acumuladas 1-X. Si está apagado: presupuesto total del mes vs ventas acumuladas 1-X.",
+        )
         if df_r_acum.empty or not f_fin:
             st.info("Sin datos acumulados para el mes.")
         else:
