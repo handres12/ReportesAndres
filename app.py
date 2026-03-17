@@ -1335,8 +1335,8 @@ def _main_impl():
         except Exception:
             pass
         st.rerun()
-    # Flag global para el comparativo 2025 (se controla visualmente en la pestaña 3)
-    alinear = st.session_state.get("p3_lunes_vs_lunes", True)
+    # Flag global para el comparativo 2025 (se controla visualmente en la pestaña 2)
+    alinear = st.session_state.get("p2_lunes_vs_lunes", True)
     f_inicio_25 = (f_inicio - timedelta(days=364)) if alinear else f_inicio.replace(year=2025)
     f_fin_25 = (f_fin - timedelta(days=364)) if alinear else f_fin.replace(year=2025)
     # La opción \"Ppto acumulado: mismo rango\" ahora vive dentro de la pestaña 4 (no en el sidebar).
@@ -1516,6 +1516,13 @@ def _main_impl():
 
     with tab2:
         st.markdown(f'<p class="section-title">Comparativo {titulo_fecha}</p>', unsafe_allow_html=True)
+        # Esta opción aplica solo a este informe: alinear el comparativo 2026 vs 2025 por día de la semana
+        st.toggle(
+            "Lunes vs Lunes (comparativo 2025)",
+            value=st.session_state.get("p2_lunes_vs_lunes", True),
+            key="p2_lunes_vs_lunes",
+            help="Si está activo, compara el mismo día de la semana: lunes con lunes, domingo con domingo (ajusta las fechas 2025).",
+        )
         if df_r.empty:
             st.info("No hay ventas al público 2026 para el día seleccionado.")
         else:
@@ -1578,13 +1585,6 @@ def _main_impl():
 
     with tab3:
         st.markdown(f'<p class="section-title">Presupuesto diario vs ventas al público — {titulo_fecha}</p>', unsafe_allow_html=True)
-        # Control visual de Lunes vs Lunes solo en esta pestaña (pero afecta todo el comparativo 2025)
-        _alinear_ui = st.toggle(
-            "Lunes vs Lunes (comparativo 2025)",
-            value=st.session_state.get("p3_lunes_vs_lunes", True),
-            key="p3_lunes_vs_lunes",
-            help="Si está activo, compara lunes vs lunes (mismo día de la semana). Si no, compara misma fecha de calendario (ej. 15/03/2026 vs 15/03/2025).",
-        )
         codigos = set(df_r['codigo_sede_crudo']).union(set(df_p['codigo_sede_crudo']) if not df_p.empty else set())
         filas3 = []
         for grp in ORDEN_GRUPOS:
@@ -2076,9 +2076,16 @@ def _main_impl():
             df_base = df_base.copy()
             df_base["Venta_Real"] = df_base["VlrBruto"] - df_base["VlrTotalDesc"].abs()
             v = float(df_base["Venta_Real"].sum())
-            t = float(df_base["Cantidad_Transacciones"].sum()) if "Cantidad_Transacciones" in df_base.columns else float(len(df_base))
-            tk = (v / t) if t > 0 else 0.0
-            return v, t, tk
+            # Si la suma de Cantidad_Transacciones es 0 pero hay filas, usar el conteo de filas como aproximación,
+            # para evitar tickets promedio en 0 cuando sí hubo movimiento.
+            if "Cantidad_Transacciones" in df_base.columns:
+                t_raw = float(df_base["Cantidad_Transacciones"].sum())
+            else:
+                t_raw = float(len(df_base))
+            if t_raw <= 0 and len(df_base) > 0:
+                t_raw = float(len(df_base))
+            tk = (v / t_raw) if t_raw > 0 else 0.0
+            return v, t_raw, tk
 
         v_act, tr_act, tk_act = _resumen_p7(fecha_sel)
         v_ref, tr_ref, tk_ref = _resumen_p7(fecha_ref)
