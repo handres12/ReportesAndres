@@ -1608,8 +1608,8 @@ def _main_impl():
         df_h = pd.DataFrame(
             columns=["codigo_sede_crudo", "Ventas", "Transacciones", "Sede_Nom", "Grupo"]
         )
-        for _esc in ("Historico_Diario_FTP", "Historico_Diario"):
-            raw_h = df_fin[mask_f25 & (df_fin["Escenario"] == _esc)].copy()
+        for _escenario in ("Historico_Diario_FTP", "Historico_Diario"):
+            raw_h = df_fin[mask_f25 & (df_fin["Escenario"] == _escenario)].copy()
             if raw_h.empty:
                 continue
             raw_h["Sede_Nom"] = raw_h["codigo_sede_crudo"].apply(
