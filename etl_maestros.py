@@ -14,6 +14,11 @@ INICIO_2026 = date(2026, 1, 1)
 FULL_RELOAD_INVOICE_2026 = os.getenv("FULL_RELOAD_INVOICE_2026", "").strip().lower() in ("1", "true", "yes")
 
 def extraer_maestros():
+    if engine_sql_server_sec is None:
+        print("[ERROR] No hay conexión a SQL Server secundario (engine_sql_server_sec=None).")
+        print("Causas típicas: falta `pyodbc` en el venv o faltan variables .env de SQL Server.")
+        print("Solución: instala el driver y pyodbc, y configura SQL_SERVER_HOST/USER/PASS/DB y SQL_SERVER_DB_SEC en .env.")
+        return
     print("Iniciando extracción desde base de datos secundaria (NEWACRVentas)...\n")
     
     tablas_maestras = {

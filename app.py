@@ -906,6 +906,23 @@ def load_pestana_6_excel():
                     return col
         return None
 
+    def _norm_header(s):
+        """Quita tildes para comparar encabezados Excel (Transacciónes vs Transacciones)."""
+        import unicodedata
+        t = unicodedata.normalize("NFD", str(s).strip().lower())
+        return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+    def _col_por_patron(df, debe_contener, año_o_none):
+        """Primera columna cuyo nombre normalizado contiene todas las subcadenas."""
+        for col in _norm_cols(df.columns):
+            n = _norm_header(col)
+            ok = all(p in n for p in debe_contener)
+            if año_o_none and str(año_o_none) not in n:
+                continue
+            if ok:
+                return col
+        return None
+
     def _a_num(serie):
         if serie is None or serie.empty:
             return pd.Series(dtype=float)
@@ -930,12 +947,32 @@ def load_pestana_6_excel():
             if "venta 2024" in f_low and "2025" in f_low:
                 ruta = os.path.join(carpeta, f)
                 break
-            if ("pestaña 6" in f_low or "pestana 6" in f_low) and ruta_pestana6 is None:
+            # Nombre real suele ser PESTAÑA 6.xlsx; en disco puede verse como PESTA?A 6
+            if ruta_pestana6 is None and "6" in f and ("pesta" in f_low or "pest" in f_low[:8]):
                 ruta_pestana6 = os.path.join(carpeta, f)
         if ruta:
             break
     if not ruta and ruta_pestana6:
         ruta = ruta_pestana6
+    # Último recurso: .xlsx que al abrir tenga Venta 2024 y Venta 2025
+    if not ruta or not os.path.isfile(ruta):
+        for carpeta in posibles:
+            if not os.path.isdir(carpeta):
+                continue
+            for f in os.listdir(carpeta):
+                if not str(f).lower().endswith(".xlsx") or str(f).startswith("~$"):
+                    continue
+                cand = os.path.join(carpeta, f)
+                try:
+                    h = pd.read_excel(cand, sheet_name=0, nrows=0)
+                    cn = " ".join(_norm_header(c) for c in h.columns)
+                    if "venta 2024" in cn and "venta 2025" in cn:
+                        ruta = cand
+                        break
+                except Exception:
+                    pass
+            if ruta and os.path.isfile(ruta):
+                break
     if not ruta or not os.path.isfile(ruta):
         return pd.DataFrame()
 
@@ -948,12 +985,23 @@ def load_pestana_6_excel():
     col_mes_num = _detectar_col(df, ["#Mes", "NumMes", "MesNum", "Nro Mes"])
     col_mes_nom = _detectar_col(df, ["Mes", "Month"])
     col_co = _detectar_col(df, ["Co", "Código", "Codigo", "StoreID", "Punto de venta"])
-    col_r24 = _detectar_col(df, ["Venta 2024", "Restaurante 2024", "Ventas 2024"])
+    col_r24 = _detectar_col(df, ["Venta 2024", "Restaurante 2024", "Ventas 2024"]) or _col_por_patron(df, ["venta", "2024"], None)
+    col_r25 = _detectar_col(df, ["Venta 2025", "Restaurante 2025", "Ventas 2025"]) or _col_por_patron(df, ["venta", "2025"], None)
+    # Transacciónes (con tilde) vs Transacciones: comparar sin acentos
     col_tx24 = _detectar_col(df, ["Transacciónes 2024", "Transacciones 2024", "Transacciones2024"])
-    col_r25 = _detectar_col(df, ["Venta 2025", "Restaurante 2025", "Ventas 2025"])
+    if not col_tx24:
+        col_tx24 = _col_por_patron(df, ["transacc"], 2024)
     col_tx25 = _detectar_col(df, ["Transacciónes 2025", "Transacciones 2025", "Transacciones2025"])
+    if not col_tx25:
+        col_tx25 = _col_por_patron(df, ["transacc"], 2025)
+    col_ticket24 = _col_por_patron(df, ["ticket", "2024"], None)
+    col_ticket25 = _col_por_patron(df, ["ticket", "2025"], None)
 
-    if not col_r24 or not col_tx24 or not col_r25 or not col_tx25:
+    if not col_r24 or not col_r25:
+        return pd.DataFrame()
+    if not col_tx24 and not col_ticket24:
+        return pd.DataFrame()
+    if not col_tx25 and not col_ticket25:
         return pd.DataFrame()
 
     mes_col = col_mes_num if col_mes_num is not None else col_mes_nom
@@ -968,9 +1016,17 @@ def load_pestana_6_excel():
     df = df.dropna(subset=["_mes"])
     df["_mes"] = df["_mes"].astype(int)
     df["_r24"] = _a_num(df[col_r24])
-    df["_tx24"] = _a_num(df[col_tx24])
     df["_r25"] = _a_num(df[col_r25])
-    df["_tx25"] = _a_num(df[col_tx25])
+    if col_tx24:
+        df["_tx24"] = _a_num(df[col_tx24])
+    else:
+        tk = _a_num(df[col_ticket24]).replace(0, float("nan"))
+        df["_tx24"] = (df["_r24"] / tk).replace([float("inf"), float("-inf")], float("nan")).fillna(0).clip(lower=0)
+    if col_tx25:
+        df["_tx25"] = _a_num(df[col_tx25])
+    else:
+        tk = _a_num(df[col_ticket25]).replace(0, float("nan"))
+        df["_tx25"] = (df["_r25"] / tk).replace([float("inf"), float("-inf")], float("nan")).fillna(0).clip(lower=0)
 
     # Mapear Co (o Punto de venta) a Sede_Nom y Grupo para poder filtrar como en el resto del informe
     def _norm_co(c):
@@ -1367,31 +1423,8 @@ def _main_impl():
     g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key=f"p_grupos_{_refresh}")
     
     st.sidebar.markdown("---")
-    if st.sidebar.button(
-        "🔄 Refrescar datos",
-        help="Vuelve al reporte por defecto: última fecha con datos, todos los restaurantes y grupos (y recarga cachés).",
-    ):
-        # Resetear filtros y fechas: _refresh hace que los widgets (fechas, restaurantes, grupos) se recreen con valores por defecto
-        st.session_state["_refresh"] = st.session_state.get("_refresh", 0) + 1
-        # Pestaña 7: volver a última fecha con datos
-        st.session_state["p7_fecha"] = u_f
-        try:
-            load_ventas_operativas.clear()
-            load_financiero_excel.clear()
-            load_ventas_2025_ftp.clear()
-            load_transacciones_hist_2025.clear()
-            load_pestana_6_excel.clear()
-            load_ventas_horarias_2026.clear()
-        except Exception:
-            pass
-        st.rerun()
-    # Flag global para el comparativo 2025 (se controla visualmente en la pestaña 2)
-    alinear = st.session_state.get("p2_lunes_vs_lunes", True)
-    # Para alinear Lunes vs Lunes usamos un desfase de ~1 año.
-    # 365 días hacia atrás asegura que 16/03/2026 ↔ 17/03/2025 (mismo día de la semana).
-    f_inicio_25 = (f_inicio - timedelta(days=365)) if alinear else f_inicio.replace(year=2025)
-    f_fin_25 = (f_fin - timedelta(days=365)) if alinear else f_fin.replace(year=2025)
-    # La opción \"Ppto acumulado: mismo rango\" ahora vive dentro de la pestaña 4 (no en el sidebar).
+    # Sin botón «Refrescar datos»: los datos se actualizan al ejecutar ETLs y reiniciar la app (Ctrl+C y volver a correr streamlit).
+    # El comparativo 2025 vs 2026 (pestaña 2) arma fechas y df_h **dentro de la pestaña 2**, después del toggle.
 
     # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
     df_r = df_op[(df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)].copy()
@@ -1401,31 +1434,6 @@ def _main_impl():
         df_r['Sede_Nom'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
-
-    # Comparativo 2025: datos del Excel/FTP ya consolidados en hechos_excel_diario (df_fin).
-    # Volvemos a la lógica estable original: tomar cualquier escenario "Historico" del rango 2025.
-    df_h_raw = df_fin[
-        (df_fin["Fecha"] >= f_inicio_25)
-        & (df_fin["Fecha"] <= f_fin_25)
-        & (df_fin["Escenario"].str.contains("Historico", na=False))
-    ].copy()
-    if not df_h_raw.empty:
-        df_h_raw["Sede_Nom"] = df_h_raw["codigo_sede_crudo"].apply(
-            lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
-        )
-        df_h_raw["Grupo"] = df_h_raw["codigo_sede_crudo"].apply(
-            lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
-        )
-        df_h_raw = df_h_raw[
-            df_h_raw["Sede_Nom"].isin(s_filtro) & df_h_raw["Grupo"].isin(g_filtro)
-        ]
-        df_h = df_h_raw.groupby("codigo_sede_crudo", as_index=False).agg(
-            {"Ventas": "sum", "Transacciones": "sum", "Sede_Nom": "first", "Grupo": "first"}
-        )
-    else:
-        df_h = pd.DataFrame(
-            columns=["codigo_sede_crudo", "Ventas", "Transacciones", "Sede_Nom", "Grupo"]
-        )
 
     # Presupuesto diario: solo pestaña 3 usa PP 2026 x día (Presupuesto_Diario_2026) si existe; si no, Presupuesto_Diarizado
     df_p_raw_pp_dia = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')].copy()
@@ -1439,24 +1447,6 @@ def _main_impl():
         df_p = df_p_raw.groupby('codigo_sede_crudo', as_index=False).agg({'Ventas': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'})
     else:
         df_p = pd.DataFrame(columns=['codigo_sede_crudo', 'Ventas', 'Sede_Nom', 'Grupo'])
-
-    # Transacciones 2026 vs 2025 (pestaña 5): 2026 desde df_op (Cantidad_Transacciones), 2025 desde transacciones_hist (solo año 2025)
-    df_tx_25_raw = load_transacciones_hist_2025()
-    if not df_tx_25_raw.empty and f_inicio_25 and f_fin_25:
-        mask_t25 = (df_tx_25_raw['Fecha'] >= f_inicio_25) & (df_tx_25_raw['Fecha'] <= f_fin_25)
-        tx_25_agg = df_tx_25_raw[mask_t25].groupby('codigo_sede_crudo', as_index=False)['Transacciones'].sum()
-        tx_25_agg['Sede_Nom'] = tx_25_agg['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
-        tx_25_agg['Grupo'] = tx_25_agg['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
-        tx_25_agg = tx_25_agg[tx_25_agg['Sede_Nom'].isin(s_filtro) & tx_25_agg['Grupo'].isin(g_filtro)]
-        df_tx_25 = tx_25_agg
-    else:
-        df_tx_25 = pd.DataFrame(columns=['codigo_sede_crudo', 'Transacciones', 'Sede_Nom', 'Grupo'])
-    if not df_r.empty and 'Cantidad_Transacciones' in df_r.columns:
-        df_tx_26 = df_r.groupby('codigo_sede_crudo', as_index=False).agg({
-            'Cantidad_Transacciones': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'
-        }).rename(columns={'Cantidad_Transacciones': 'Transacciones'})
-    else:
-        df_tx_26 = pd.DataFrame(columns=['codigo_sede_crudo', 'Transacciones', 'Sede_Nom', 'Grupo'])
 
     # Acumulado mes (1 al día f_fin) para informe 4
     if f_fin:
@@ -1529,12 +1519,12 @@ def _main_impl():
     else:
         titulo_fecha = ""
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    # Pestaña 5 (Transacciones 2026 vs 2025) oculta hasta tener transacciones 2025 por día.
+    tab1, tab2, tab3, tab4, tab6, tab7 = st.tabs([
         "1. Ventas al público del día",
         "2. Comparativo 2026 vs 2025",
         "3. Presupuesto diario vs ventas al público",
         "4. Presupuesto acumulado vs ventas al público",
-        "5. Transacciones 2026 vs 2025",
         "6. Tendencia 2025 vs 2026 (mes a mes)",
         "7. Venta diaria comparativa",
     ])
@@ -1580,19 +1570,82 @@ def _main_impl():
                 st.markdown(_html_tabla_informe(headers1, row_tuples, col_var_index=None), unsafe_allow_html=True)
 
     with tab2:
-        st.markdown(f'<p class="section-title">Comparativo {titulo_fecha}</p>', unsafe_allow_html=True)
-        # Esta opción aplica solo a este informe: alinear el comparativo 2026 vs 2025 por día de la semana
-        st.toggle(
+        # Toggle primero: el valor se usa en el mismo ciclo para fechas 2025 y df_h.
+        mismo_dia_sem = st.toggle(
             "Lunes vs Lunes (comparativo 2025)",
             value=st.session_state.get("p2_lunes_vs_lunes", True),
             key="p2_lunes_vs_lunes",
-            help="Si está activo, compara el mismo día de la semana: lunes con lunes, domingo con domingo (ajusta las fechas 2025).",
+            help="Activado: mismo día de la semana (52 semanas atrás, ej. lunes 16/03/2026 vs lunes 17/03/2025). Desactivado: misma fecha de calendario (16/03/2026 vs 16/03/2025).",
         )
+
+        def _rango_fechas_2025(d0: date, d1: date, lunes_vs_lunes: bool) -> tuple:
+            """
+            Devuelve el rango de fechas 2025 a comparar contra [d0, d1].
+
+            - lunes_vs_lunes=True  -> mismo día de la semana del año anterior
+              (lunes con lunes, martes con martes, etc.).
+            - lunes_vs_lunes=False -> misma fecha de calendario (16/03/2026 vs 16/03/2025).
+            """
+            if lunes_vs_lunes:
+                # 364 = 52×7: desplaza un año exacto manteniendo el día de la semana.
+                a = d0 - timedelta(days=364)
+                b = d1 - timedelta(days=364)
+            else:
+                try:
+                    a = d0.replace(year=2025)
+                except ValueError:
+                    a = date(2025, 2, 28)
+                try:
+                    b = d1.replace(year=2025)
+                except ValueError:
+                    b = date(2025, 2, 28)
+            return (a, b) if a <= b else (b, a)
+
+        d25_ini, d25_fin = _rango_fechas_2025(f_inicio, f_fin, mismo_dia_sem)
+        ts_a, ts_b = pd.Timestamp(d25_ini), pd.Timestamp(d25_fin)
+        fd = pd.to_datetime(df_fin["Fecha"]).dt.normalize()
+        mask_f25 = (fd >= ts_a) & (fd <= ts_b)
+        df_h = pd.DataFrame(
+            columns=["codigo_sede_crudo", "Ventas", "Transacciones", "Sede_Nom", "Grupo"]
+        )
+        for _esc in ("Historico_Diario_FTP", "Historico_Diario"):
+            raw_h = df_fin[mask_f25 & (df_fin["Escenario"] == _esc)].copy()
+            if raw_h.empty:
+                continue
+            raw_h["Sede_Nom"] = raw_h["codigo_sede_crudo"].apply(
+                lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+            )
+            raw_h["Grupo"] = raw_h["codigo_sede_crudo"].apply(
+                lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+            )
+            raw_h = raw_h[raw_h["Sede_Nom"].isin(s_filtro) & raw_h["Grupo"].isin(g_filtro)]
+            if raw_h.empty:
+                continue
+            df_h = raw_h.groupby("codigo_sede_crudo", as_index=False).agg(
+                {"Ventas": "sum", "Transacciones": "sum", "Sede_Nom": "first", "Grupo": "first"}
+            )
+            break
+
+        st.markdown(f'<p class="section-title">Comparativo {titulo_fecha}</p>', unsafe_allow_html=True)
+        if mismo_dia_sem:
+            st.caption(
+                f"**2025 (mismo día de la semana):** {d25_ini.strftime('%d/%m/%Y')} — {d25_fin.strftime('%d/%m/%Y')} · "
+                f"**2026:** {f_inicio.strftime('%d/%m/%Y')} — {f_fin.strftime('%d/%m/%Y')}"
+            )
+        else:
+            st.caption(
+                f"**2025 (misma fecha de calendario):** {d25_ini.strftime('%d/%m/%Y')} — {d25_fin.strftime('%d/%m/%Y')} · "
+                f"**2026:** {f_inicio.strftime('%d/%m/%Y')} — {f_fin.strftime('%d/%m/%Y')}"
+            )
+
         if df_r.empty:
             st.info("No hay ventas al público 2026 para el día seleccionado.")
         else:
             if df_h.empty:
-                st.warning("No hay datos 2025 disponibles (ni en `raw_ventas_2025` ni en `hechos_excel_diario` con `Historico_Diario_FTP`). Ejecuta `python etl_ftp_ventas_2025.py` y luego pulsa «Refrescar datos».")
+                st.warning(
+                    "No hay datos 2025 en el rango indicado para esta vista. "
+                    "Carga diarios 2025 con `python etl_ftp_ventas_2025.py` (Historico_Diario_FTP) o con el ETL que genera Historico_Diario; luego reinicia la app."
+                )
             codigos_r = set(df_r['codigo_sede_crudo'])
             codigos_h = set(df_h['codigo_sede_crudo']) if not df_h.empty else set()
             codigos = codigos_r | codigos_h
@@ -1701,7 +1754,7 @@ def _main_impl():
                 tr_cls = " total-gral" if f['RESTAURANTE'] == 'Total' else (" total-grupo" if f['es_total'] else "")
                 row_tuples.append((tr_cls, [f['Grupo'], rest_label, f_moneda(f['ppto']), f_moneda(f['venta']), var_str], _cls_var(var_str)))
             st.markdown(_html_tabla_informe(headers3, row_tuples, col_var_index=4), unsafe_allow_html=True)
-            st.caption("Si un restaurante muestra **$0 en ventas**, puede que no haya datos de venta para esa fecha en la base operativa (ejecuta el ETL y pulsa «Refrescar datos» en el menú).")
+            st.caption("Si un restaurante muestra **$0 en ventas**, puede que no haya datos de venta para esa fecha en la base operativa (ejecuta el ETL y reinicia la app).")
         else:
             st.info("Sin datos para presupuesto o ventas al público del día.")
 
@@ -1784,57 +1837,6 @@ def _main_impl():
                     st.caption("Comparando: presupuesto total del mes vs ventas acumuladas 1-" + str(f_fin.day) + ".")
             else:
                 st.info("Sin datos acumulados.")
-
-    with tab5:
-        st.markdown(f'<p class="section-title">Transacciones 2026 vs 2025 — {titulo_fecha}</p>', unsafe_allow_html=True)
-        codigos_tx_r = set(df_tx_26['codigo_sede_crudo']) if not df_tx_26.empty else set()
-        codigos_tx_h = set(df_tx_25['codigo_sede_crudo']) if not df_tx_25.empty else set()
-        codigos_tx = codigos_tx_r | codigos_tx_h
-        filas5 = []
-        for grp in ORDEN_GRUPOS:
-            for c in codigos_tx:
-                g, n = MAPEO_SEDES.get(c, ('OTRO', f'Sede {c}'))
-                if g != grp or n not in s_filtro or g not in g_filtro:
-                    continue
-                tr26 = df_tx_26[df_tx_26['codigo_sede_crudo'] == c]['Transacciones'].sum() if not df_tx_26.empty else 0
-                tr25 = df_tx_25[df_tx_25['codigo_sede_crudo'] == c]['Transacciones'].sum() if not df_tx_25.empty else 0
-                var = (tr26 / tr25 - 1) if tr25 and tr25 > 0 else None
-                filas5.append({'Grupo': grp, 'RESTAURANTE': n, 'tr26': tr26, 'tr25': tr25, 'var': var, 'es_total': False})
-            dg = [f for f in filas5 if f['Grupo'] == grp and not f['es_total']]
-            if dg:
-                s26 = sum(x['tr26'] for x in dg)
-                s25 = sum(x['tr25'] for x in dg)
-                var_grp = (s26 / s25 - 1) if s25 and s25 > 0 else None
-                filas5.append({'Grupo': grp, 'RESTAURANTE': f"Total {grp}", 'tr26': s26, 'tr25': s25, 'var': var_grp, 'es_total': True})
-        if filas5:
-            tot26 = sum(f['tr26'] for f in filas5 if f['es_total'])
-            tot25 = sum(f['tr25'] for f in filas5 if f['es_total'])
-            var_total = (tot26 / tot25 - 1) if tot25 and tot25 > 0 else None
-            filas5.append({'Grupo': '', 'RESTAURANTE': 'Total', 'tr26': tot26, 'tr25': tot25, 'var': var_total, 'es_total': True})
-            col_met, _ = st.columns([2, 4])
-            with col_met:
-                st.metric("Var. transacciones vs 2025", f"{var_total:+.0%}" if var_total is not None else "—")
-            # Tabla HTML compacta: ancho justo al contenido, sin scroll ni espacios grandes
-            css_t5 = (
-                "<style>.tbl-tx5 { width: fit-content; max-width: 100%; table-layout: auto; border-collapse: collapse; "
-                "font-size: 0.9rem; }.tbl-tx5 th, .tbl-tx5 td { border: 1px solid #ddd; padding: 4px 10px; white-space: nowrap; "
-                "text-align: left; }.tbl-tx5 th { background: #f0f2f6; font-weight: 600; }.tbl-tx5 td:nth-child(3), "
-                ".tbl-tx5 td:nth-child(4) { text-align: right; }.tbl-tx5 td:nth-child(5) { text-align: center; }"
-                ".tbl-tx5 tr.total-gral td { background-color: #E8A317; color: #1a1510; font-weight: bold; }"
-                ".tbl-tx5 tr.total-grupo td { background-color: #3d4554; color: #fff; font-weight: bold; }</style>"
-            )
-            tbl5 = css_t5 + "<table class='tbl-tx5'><thead><tr><th>GRUPO</th><th>RESTAURANTE</th><th>TRANSACCIONES 2026</th><th>TRANSACCIONES 2025</th><th>VARIACIÓN</th></tr></thead><tbody>"
-            for f in filas5:
-                rest_label = ("▪ " + f['RESTAURANTE']) if f['es_total'] and f['RESTAURANTE'] != 'Total' else f['RESTAURANTE']
-                var_str = "—" if f['var'] is None else (f"{f['var']:+.0%} ▲" if f['var'] >= 0 else f"{f['var']:+.0%} ▼")
-                tr_cls = " total-gral" if f['RESTAURANTE'] == 'Total' else (" total-grupo" if f['es_total'] else "")
-                var_style = _cls_var(var_str)
-                tbl5 += f"<tr class='{tr_cls}'><td>{_esc(f['Grupo'])}</td><td>{_esc(rest_label)}</td><td>{_esc(f_entero(f['tr26']))}</td><td>{_esc(f_entero(f['tr25']))}</td><td style='{var_style}'>{_esc(var_str)}</td></tr>"
-            tbl5 += "</tbody></table>"
-            st.markdown(tbl5, unsafe_allow_html=True)
-            st.caption("Transacciones 2026 desde la base operativa. Transacciones 2025 desde el archivo transacciones_hist (solo año 2025) en la raíz o en fuentes_excel.")
-        else:
-            st.info("No hay datos de transacciones para el rango seleccionado. 2026: base operativa. 2025: archivo transacciones_hist.csv o transacciones_hist.xlsx con columnas Co, Fecha y Transacciones (solo año 2025).")
 
     with tab6:
         # Tendencia 2025 vs 2026 mes a mes: gráfico % crecimiento y tablas VR NETO x año/mes y YTD

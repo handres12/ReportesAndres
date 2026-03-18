@@ -5,6 +5,11 @@ from models import RawVentas2026
 
 
 def extraer_datos_sql():
+    if engine_sql_server is None:
+        print("[ERROR] No hay conexión a SQL Server (engine_sql_server=None).")
+        print("Causas típicas: falta `pyodbc` en el venv o faltan variables .env de SQL Server.")
+        print("Solución: instala el driver y pyodbc, y configura SQL_SERVER_HOST/USER/PASS/DB en .env.")
+        return
     print("[OK] Iniciando extraccion de VENTAS (Base Principal - Tabla: Detalle)...")
     
     # Consulta optimizada para la tabla Detalle
