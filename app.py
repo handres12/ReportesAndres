@@ -1067,6 +1067,35 @@ def load_pestana_6_excel():
 
 # --- FORMATOS ---
 def f_moneda(v): return f"${v:,.0f}".replace(",", ".") if pd.notna(v) else "$0"
+
+
+def f_moneda_informe(v):
+    """Moneda estilo informe Excel: espacio tras $ y punto miles."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "$ 0"
+    return f"$ {float(v):,.0f}".replace(",", ".")
+
+
+def _series_val(s, cod):
+    """Obtiene valor de Series por codigo_sede_crudo tolerando int/str y ceros a la izquierda."""
+    if s is None or len(s) == 0:
+        return 0.0
+    for k in (cod, str(cod).strip(), str(cod).strip().upper()):
+        if k in s.index:
+            return float(s.loc[k])
+    try:
+        k2 = str(cod).strip().upper().lstrip("0") or str(cod)
+        if k2 in s.index:
+            return float(s.loc[k2])
+    except Exception:
+        pass
+    try:
+        kf = str(int(float(str(cod).strip())))
+        if kf in s.index:
+            return float(s.loc[kf])
+    except (ValueError, TypeError, KeyError):
+        pass
+    return 0.0
 def f_entero(v): return f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "0"
 
 def _fmt_millones_pesos(n):
@@ -1129,6 +1158,188 @@ def _html_tabla_informe(headers, row_tuples, col_var_index=None):
             html += f"<td{style}>{_esc(v)}</td>"
         html += "</tr>"
     html += "</tbody></table>"
+    return html
+
+def _p8_fecha_venta_aa(d_2026: date, lunes_vs_lunes: bool) -> date:
+    """Fecha en 2025 comparable a d_2026 (misma lógica que pestaña 2)."""
+    if lunes_vs_lunes:
+        return d_2026 - timedelta(days=364)
+    try:
+        return d_2026.replace(year=2025)
+    except ValueError:
+        return date(2025, 2, 28)
+
+def _p8_codigos_en_orden(MAPEO_SEDES, s_filtro, g_filtro):
+    """Códigos de sede en orden de informe, respetando filtros."""
+    por_g_n = {}
+    for cod, (gr, nom) in MAPEO_SEDES.items():
+        por_g_n.setdefault((gr, nom), []).append(cod)
+    out = []
+    for grp in ORDEN_GRUPOS:
+        for nombre in ORDEN_SEDES:
+            key = (grp, nombre)
+            if key not in por_g_n:
+                continue
+            if nombre not in s_filtro or grp not in g_filtro:
+                continue
+            out.append(por_g_n[key][0])
+    return out
+
+def _p8_hist_diario_series(df_fin, MAPEO_SEDES, s_filtro, g_filtro):
+    """Serie (codigo_sede_crudo, Fecha date) -> Ventas 2025; prioriza Historico_Diario_FTP."""
+    if df_fin is None or df_fin.empty:
+        return pd.Series(dtype=float)
+    mask = df_fin["Escenario"].isin(["Historico_Diario_FTP", "Historico_Diario"])
+    if not mask.any():
+        return pd.Series(dtype=float)
+    d = df_fin.loc[mask].copy()
+    d["Fecha"] = pd.to_datetime(d["Fecha"]).dt.date
+    d["Sede_Nom"] = d["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1])
+    d["Grupo"] = d["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0])
+    d = d[d["Sede_Nom"].isin(s_filtro) & d["Grupo"].isin(g_filtro)]
+    if d.empty:
+        return pd.Series(dtype=float)
+    s_ftp = d[d["Escenario"] == "Historico_Diario_FTP"].groupby(["codigo_sede_crudo", "Fecha"])["Ventas"].sum()
+    s_diario = d[d["Escenario"] == "Historico_Diario"].groupby(["codigo_sede_crudo", "Fecha"])["Ventas"].sum()
+    if not s_ftp.empty:
+        return s_ftp.combine_first(s_diario)
+    return s_diario
+
+def _html_pestana8_proyeccion(
+    fechas, codigos, labels_rest, venta_map, ppto_map, pct_ejec_map, aa_map,
+    totales_por_codigo, ppto_mes_por_codigo, proy_por_codigo, var_por_codigo,
+):
+    """
+    Layout tipo Excel: FECHA y DÍA comunes; por restaurante 5 columnas
+    (VENTA, PPTO, ícono, % DIARIO FECHA, VENTA AA).
+    Pie (orden Excel): PROYECCIÓN, PPTO mes, VAR.
+    """
+    css = (
+        "<style>"
+        ".tbl-p8-wrap { overflow-x: auto; max-width: 100%; margin: 8px 0; border: 1px solid #1a1a1a; padding: 8px; background: #f5f5f5; }"
+        ".tbl-p8 { border-collapse: collapse; font-size: 0.8rem; white-space: nowrap; }"
+        ".tbl-p8 th { background: #1a1a1a; color: #fff; font-weight: 700; padding: 6px 8px; border: 1px solid #000; text-align: center; }"
+        ".tbl-p8 td { padding: 4px 8px; border: 1px solid #000; text-align: right; vertical-align: middle; }"
+        ".tbl-p8 td.t-left { text-align: left; }"
+        ".tbl-p8 td.t-center { text-align: center; }"
+        ".tbl-p8 tr.p8-dia:nth-child(even) { background: #d9eaf7; }"
+        ".tbl-p8 tr.p8-dia:nth-child(odd) { background: #fff; }"
+        ".tbl-p8 tr.p8-total td { background: #3d3d3d; color: #fff; font-weight: 700; border-color: #222; }"
+        ".tbl-p8 tr.p8-foot td { font-weight: 700; border: 2px solid #000; }"
+        ".tbl-p8 tr.p8-foot .p8-lbl { background: #fff2a8; color: #1a1510; text-align: left; }"
+        ".tbl-p8 tr.p8-foot .p8-val { background: #d9eaf7; color: #1a1510; }"
+        ".tbl-p8 .sep { border-left: 4px solid #000 !important; }"
+        ".tbl-p8 .ic-up { color: #1a6b1a; font-weight: 800; }"
+        ".tbl-p8 .ic-down { color: #c41e3a; font-weight: 800; }"
+        ".tbl-p8 .ic-mid { color: #b8860b; font-weight: 800; }"
+        "</style>"
+    )
+    nblk = len(codigos)
+    subcols = ["VENTA TOTAL", "PPTO DIARIO", "", "% DIARIO FECHA", "VENTA AA"]
+    html = css + "<div class='tbl-p8-wrap'><table class='tbl-p8'><thead>"
+    html += "<tr><th colspan='2'></th>"
+    for i, lbl in enumerate(labels_rest):
+        if i > 0:
+            html += f"<th colspan='5' class='sep'>{_esc(lbl)}</th>"
+        else:
+            html += f"<th colspan='5'>{_esc(lbl)}</th>"
+    html += "</tr><tr><th>FECHA</th><th>DÍA</th>"
+    for i in range(nblk):
+        for j, sc in enumerate(subcols):
+            cls = "sep" if (i > 0 and j == 0) else ""
+            html += f"<th class='{_esc(cls)}'>{_esc(sc)}</th>" if cls else f"<th>{_esc(sc)}</th>"
+    html += "</tr></thead><tbody>"
+    for d in fechas:
+        wd = DIAS_SEMANA[d.weekday()].lower()
+        fd = f"{d.day}/{d.month}/{d.year}"
+        html += "<tr class='p8-dia'>"
+        html += f"<td class='t-left'>{_esc(fd)}</td><td class='t-left'>{_esc(wd)}</td>"
+        for i, cod in enumerate(codigos):
+            v = venta_map.get((cod, d), 0.0) or 0.0
+            p = ppto_map.get((cod, d), 0.0) or 0.0
+            aa = aa_map.get((cod, d), 0.0) or 0.0
+            pct = pct_ejec_map.get((cod, d))
+            pct_s = "—" if pct is None else f"{pct * 100:.0f}%"
+            if p > 0 and pd.notna(v):
+                ratio = float(v) / float(p)
+                if ratio >= 1.0:
+                    ic = "<span class='ic-up' title='Sobre ppto'>▲</span>"
+                elif ratio >= 0.97:
+                    ic = "<span class='ic-mid' title='Cerca de ppto'>►</span>"
+                else:
+                    ic = "<span class='ic-down' title='Bajo ppto'>▼</span>"
+            elif p <= 0 and abs(float(v or 0)) < 1e-6:
+                ic = "<span class='ic-mid'>—</span>"
+            else:
+                ic = "—"
+            td1 = "<td class='sep'>" if i > 0 else "<td>"
+            html += (
+                f"{td1}{_esc(f_moneda_informe(v))}</td>"
+                f"<td>{_esc(f_moneda_informe(p))}</td>"
+                f"<td class='t-center'>{ic}</td>"
+                f"<td class='t-center'>{_esc(pct_s)}</td>"
+                f"<td>{_esc(f_moneda_informe(aa))}</td>"
+            )
+        html += "</tr>"
+    html += "<tr class='p8-total'>"
+    html += f"<td class='t-left' colspan='2'>{_esc('Total general')}</td>"
+    for i, cod in enumerate(codigos):
+        t = totales_por_codigo.get(cod, {})
+        pct_tot = t.get("pct")
+        pct_cell = "—" if pct_tot is None else f"{pct_tot * 100:.0f}%"
+        td0 = "<td class='sep'>" if i > 0 else "<td>"
+        html += (
+            f"{td0}{_esc(f_moneda_informe(t.get('venta', 0)))}</td>"
+            f"<td>{_esc(f_moneda_informe(t.get('ppto', 0)))}</td>"
+            f"<td class='t-center'>—</td>"
+            f"<td class='t-center'>{_esc(pct_cell)}</td>"
+            f"<td>{_esc(f_moneda_informe(t.get('aa', 0)))}</td>"
+        )
+    html += "</tr>"
+    for row_kind in ("proy", "ppto", "var"):
+        html += "<tr class='p8-foot'>"
+        if row_kind == "proy":
+            html += f"<td class='t-left p8-lbl' colspan='2'>{_esc('PROYECCIÓN')}</td>"
+        elif row_kind == "ppto":
+            html += f"<td class='t-left p8-lbl' colspan='2'>{_esc('PPTO')}</td>"
+        else:
+            html += f"<td class='t-left p8-lbl' colspan='2'>{_esc('VAR')}</td>"
+        for i, cod in enumerate(codigos):
+            pm = float(ppto_mes_por_codigo.get(cod, 0) or 0)
+            pr = proy_por_codigo.get(cod, {})
+            pval = float(pr.get("valor") or 0)
+            vp = var_por_codigo.get(cod, {})
+            pct_exec = pr.get("pct")
+            if row_kind == "proy":
+                pct_cell = "—" if pct_exec is None else f"{float(pct_exec) * 100:.0f}%"
+                td0 = "<td class='sep p8-val' colspan='3'>" if i > 0 else "<td class='p8-val' colspan='3'>"
+                html += (
+                    f"{td0}{_esc(f_moneda_informe(pval))}</td>"
+                    f"<td class='t-center p8-val'>{_esc(pct_cell)}</td>"
+                    f"<td class='p8-val'>—</td>"
+                )
+            elif row_kind == "ppto":
+                td0 = "<td class='sep p8-val' colspan='3'>" if i > 0 else "<td class='p8-val' colspan='3'>"
+                html += (
+                    f"{td0}{_esc(f_moneda_informe(pm))}</td>"
+                    f"<td class='t-center p8-val'>{_esc('100%')}</td>"
+                    f"<td class='p8-val'>—</td>"
+                )
+            else:
+                vmon = float(vp.get("mon") or 0)
+                vpc = vp.get("pct")
+                vpc_s = "—" if vpc is None else f"{float(vpc) * 100:.0f}%"
+                ic = "<span class='ic-down'>▼</span> " if (vpc is not None and vpc < 0) else (
+                    "<span class='ic-up'>▲</span> " if (vpc is not None and vpc > 0) else ""
+                )
+                td0 = "<td class='sep p8-val' colspan='3'>" if i > 0 else "<td class='p8-val' colspan='3'>"
+                html += (
+                    f"{td0}{ic}{_esc(f_moneda_informe(vmon))}</td>"
+                    f"<td class='t-center p8-val'>{_esc(vpc_s)}</td>"
+                    f"<td class='p8-val'>—</td>"
+                )
+        html += "</tr>"
+    html += "</tbody></table></div>"
     return html
 
 def _estilo_tabla_informe(df_show, col_var="VARIACIÓN"):
@@ -1520,13 +1731,14 @@ def _main_impl():
         titulo_fecha = ""
 
     # Pestaña 5 (Transacciones 2026 vs 2025) oculta hasta tener transacciones 2025 por día.
-    tab1, tab2, tab3, tab4, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab6, tab7, tab8 = st.tabs([
         "1. Ventas al público del día",
         "2. Comparativo 2026 vs 2025",
         "3. Presupuesto diario vs ventas al público",
         "4. Presupuesto acumulado vs ventas al público",
         "6. Tendencia 2025 vs 2026 (mes a mes)",
         "7. Venta diaria comparativa",
+        "8. Proyección vs presupuesto (diario)",
     ])
 
     with tab1:
@@ -2354,6 +2566,198 @@ def _main_impl():
             "Fuente: ventas al público (raw_ventas_2026 + transacciones). "
             "Se respetan los filtros de Restaurantes y Grupos del panel izquierdo."
         )
+
+    with tab8:
+        st.markdown(
+            "<p class='section-title'>8. Proyección vs presupuesto — detalle diario por restaurante</p>",
+            unsafe_allow_html=True,
+        )
+        p8_lunes = st.toggle(
+            "Lunes vs lunes para VENTA AA (2025)",
+            value=st.session_state.get("p8_lunes_vs_lunes", True),
+            key="p8_lunes_vs_lunes",
+            help="Igual que pestaña 2: 364 días atrás o la misma fecha de calendario en 2025.",
+        )
+        if f_inicio and f_fin:
+            codigos_p8 = _p8_codigos_en_orden(MAPEO_SEDES, s_filtro, g_filtro)
+            if not codigos_p8:
+                st.info("No hay restaurantes con los filtros actuales.")
+            else:
+                inicio_mes_p8 = date(f_fin.year, f_fin.month, 1)
+                mask_pp_p8 = (
+                    (df_fin["Fecha"] >= inicio_mes_p8)
+                    & (df_fin["Fecha"] <= f_fin)
+                    & (df_fin["Escenario"] == "Presupuesto_Diario_2026")
+                )
+                esc_p8 = "Presupuesto_Diario_2026" if not df_fin[mask_pp_p8].empty else "Presupuesto_Diarizado"
+                df_p8_raw = df_fin[
+                    (df_fin["Fecha"] >= f_inicio)
+                    & (df_fin["Fecha"] <= f_fin)
+                    & (df_fin["Escenario"] == esc_p8)
+                ].copy()
+                df_p8_raw["Sede_Nom"] = df_p8_raw["codigo_sede_crudo"].apply(
+                    lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+                )
+                df_p8_raw["Grupo"] = df_p8_raw["codigo_sede_crudo"].apply(
+                    lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+                )
+                df_p8_raw = df_p8_raw[
+                    df_p8_raw["Sede_Nom"].isin(s_filtro) & df_p8_raw["Grupo"].isin(g_filtro)
+                ]
+                ppto_ser = (
+                    df_p8_raw.groupby(["codigo_sede_crudo", "Fecha"])["Ventas"].sum()
+                    if not df_p8_raw.empty
+                    else pd.Series(dtype=float)
+                )
+
+                df_v8 = df_op[(df_op["Fecha"] >= f_inicio) & (df_op["Fecha"] <= f_fin)].copy()
+                df_v8["Venta_Real"] = df_v8["VlrBruto"] - df_v8["VlrTotalDesc"].abs()
+                df_v8["Sede_Nom"] = df_v8["codigo_sede_crudo"].apply(
+                    lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+                )
+                df_v8["Grupo"] = df_v8["codigo_sede_crudo"].apply(
+                    lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+                )
+                df_v8 = df_v8[df_v8["Sede_Nom"].isin(s_filtro) & df_v8["Grupo"].isin(g_filtro)]
+                venta_ser = (
+                    df_v8.groupby(["codigo_sede_crudo", "Fecha"])["Venta_Real"].sum()
+                    if not df_v8.empty
+                    else pd.Series(dtype=float)
+                )
+
+                hist_aa = _p8_hist_diario_series(df_fin, MAPEO_SEDES, s_filtro, g_filtro)
+
+                fechas_p8 = []
+                d_cur = f_inicio
+                while d_cur <= f_fin:
+                    fechas_p8.append(d_cur)
+                    d_cur += timedelta(days=1)
+
+                def _p8_norm_key(cod, d):
+                    d2 = d.date() if hasattr(d, "date") else d
+                    return (str(cod).strip().upper().lstrip("0") or cod, d2)
+
+                venta_map = {}
+                for (c, d), val in venta_ser.items():
+                    venta_map[_p8_norm_key(c, d)] = float(val)
+                ppto_map = {}
+                for (c, d), val in ppto_ser.items():
+                    ppto_map[_p8_norm_key(c, d)] = float(val)
+
+                hist_dict_aa = {}
+                if not hist_aa.empty:
+                    for idx, val in hist_aa.items():
+                        c_raw, d_raw = idx
+                        hist_dict_aa[_p8_norm_key(c_raw, d_raw)] = float(val)
+
+                aa_map = {}
+                for d in fechas_p8:
+                    d_aa = _p8_fecha_venta_aa(d, p8_lunes)
+                    for cod in codigos_p8:
+                        ck = str(cod).strip().upper().lstrip("0") or cod
+                        aa_map[(ck, d)] = hist_dict_aa.get((ck, d_aa), 0.0)
+
+                pct_ejec_map = {}
+                for d in fechas_p8:
+                    for cod in codigos_p8:
+                        ck = str(cod).strip().upper().lstrip("0") or cod
+                        v = venta_map.get((ck, d), 0.0) or 0.0
+                        p = ppto_map.get((ck, d), 0.0) or 0.0
+                        if p > 0:
+                            pct_ejec_map[(ck, d)] = float(v) / float(p)
+                        else:
+                            pct_ejec_map[(ck, d)] = None
+
+                totales_por_codigo = {}
+                p_mes_sede = ppto_mes_por_sede if f_fin else pd.Series(dtype=float)
+                proy_por_codigo = {}
+                var_por_codigo = {}
+                for cod in codigos_p8:
+                    ck = str(cod).strip().upper().lstrip("0") or cod
+                    sv = sum((venta_map.get((ck, d), 0.0) or 0.0) for d in fechas_p8)
+                    sp = sum((ppto_map.get((ck, d), 0.0) or 0.0) for d in fechas_p8)
+                    saa = sum((aa_map.get((ck, d), 0.0) or 0.0) for d in fechas_p8)
+                    pct_tot = (sv / sp) if sp and sp > 0 else None
+                    totales_por_codigo[ck] = {"venta": sv, "ppto": sp, "pct": pct_tot, "aa": saa}
+                    pm = _series_val(p_mes_sede, cod)
+                    if pct_tot is not None and pm > 0 and sp and sp > 0:
+                        proy_val = float(sv) / float(sp) * float(pm)
+                    else:
+                        proy_val = 0.0
+                    proy_por_codigo[ck] = {"valor": proy_val, "pct": pct_tot}
+                    if pm > 0:
+                        var_por_codigo[ck] = {
+                            "mon": float(pm) - float(proy_val),
+                            "pct": (float(proy_val) / float(pm) - 1.0),
+                        }
+                    else:
+                        var_por_codigo[ck] = {"mon": 0.0, "pct": None}
+
+                labels_p8 = []
+                for cod in codigos_p8:
+                    ck = str(cod).strip().upper().lstrip("0") or cod
+                    g, n = MAPEO_SEDES.get(cod, MAPEO_SEDES.get(ck, ("", str(cod))))
+                    labels_p8.append(f"Andrés {g} {n}")
+
+                st.caption(
+                    f"Rango: **{f_inicio.strftime('%d/%m/%Y')}** — **{f_fin.strftime('%d/%m/%Y')}**. "
+                    f"Presupuesto diario: **{esc_p8}**. "
+                    "Ppto mensual y proyección respecto al **mes de la fecha «Hasta»**. "
+                    "**Proyección** = (Σ venta / Σ ppto diario del rango) × ppto del mes."
+                )
+                p8_mes_vals = {}
+                for c in codigos_p8:
+                    ck = str(c).strip().upper().lstrip("0") or c
+                    p8_mes_vals[ck] = _series_val(ppto_mes_por_sede, c)
+                ck_list = [str(c).strip().upper().lstrip("0") or c for c in codigos_p8]
+                html_p8 = _html_pestana8_proyeccion(
+                    fechas_p8,
+                    ck_list,
+                    labels_p8,
+                    venta_map,
+                    ppto_map,
+                    pct_ejec_map,
+                    aa_map,
+                    totales_por_codigo,
+                    p8_mes_vals,
+                    proy_por_codigo,
+                    var_por_codigo,
+                )
+                st.markdown(html_p8, unsafe_allow_html=True)
+                with st.expander("Validación (coherencia con Excel)"):
+                    st.markdown(
+                        "**Reglas:** Total **%** = Σ venta ÷ Σ ppto diario del rango. "
+                        "**PROYECCIÓN** = ese cociente × **PPTO del mes** (suma diarios 1→fin de mes del Excel). "
+                        "**VAR $** = PPTO mes − PROYECCIÓN · **VAR %** = PROYECCIÓN ÷ PPTO mes − 1."
+                    )
+                    rows_v = []
+                    for c in codigos_p8:
+                        ck = str(c).strip().upper().lstrip("0") or c
+                        t = totales_por_codigo.get(ck, {})
+                        pm = float(p8_mes_vals.get(ck, 0.0) or 0.0)
+                        pr = float(proy_por_codigo.get(ck, {}).get("valor") or 0.0)
+                        _g, nom = MAPEO_SEDES.get(c, MAPEO_SEDES.get(ck, ("", ck)))
+                        sp_t = t.get("ppto") or 0.0
+                        sv_t = t.get("venta") or 0.0
+                        chk_proy = (float(sv_t) / float(sp_t) * pm) if sp_t and pm else 0.0
+                        dif = abs(pr - chk_proy)
+                        rows_v.append(
+                            {
+                                "Sede": nom,
+                                "Σ Venta": round(t.get("venta", 0), 2),
+                                "Σ Ppto día": round(t.get("ppto", 0), 2),
+                                "Ppto mes": round(pm, 2),
+                                "Proyección": round(pr, 2),
+                                "Δ redondeo": round(dif, 2),
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(rows_v), hide_index=True, use_container_width=True)
+                    st.caption(
+                        "Si **Δ redondeo** no es ~0, revisa datos. Diferencias grandes vs tu pantallazo suelen ser: "
+                        "histórico 2025 (toggle lunes vs lunes), códigos de sede en el Excel PP, o fechas sin ppto cargado."
+                    )
+        else:
+            st.info("Selecciona fechas en el panel izquierdo.")
 
 if __name__ == "__main__":
     main()
