@@ -72,10 +72,16 @@ def obtener_rutas():
         f_low = f.lower()
         ruta = os.path.join(carpeta, f)
         
-        if "presupuesto" in f_low and not r_presup: r_presup = ruta
-        elif "transacciones" in f_low and not r_trans: r_trans = ruta
-        elif ("2025" in f_low or "dia" in f_low) and not r_2025: r_2025 = ruta
-        elif "ventas" in f_low and "2025" not in f_low and "dia" not in f_low and not r_ventas: r_ventas = ruta
+        if "presupuesto" in f_low and not r_presup:
+            r_presup = ruta
+        elif "transacciones" in f_low and not r_trans:
+            r_trans = ruta
+        elif (("2025" in f_low or "dia" in f_low) and not r_2025
+              and not ("pp" in f_low and "2026" in f_low)):
+            # Evita tomar "PP 2026 X Día.xlsx" como historico 2025 por la palabra "dia".
+            r_2025 = ruta
+        elif "ventas" in f_low and "2025" not in f_low and "dia" not in f_low and not r_ventas:
+            r_ventas = ruta
             
     return r_ventas, r_trans, r_presup, r_2025
 
@@ -200,6 +206,13 @@ def procesar_presupuesto_diario_2026(ruta_archivo):
     df["Transacciones"] = 0
     df["Ticket_Promedio"] = 0
     out = df[["StoreID_External", "Sede_Excel", "Fecha", "Escenario", "Ventas", "Transacciones", "Ticket_Promedio"]].copy()
+    n_antes = len(out)
+    out = (
+        out.groupby(["StoreID_External", "Fecha", "Escenario"], as_index=False)
+        .agg({"Ventas": "sum", "Transacciones": "sum", "Sede_Excel": "first", "Ticket_Promedio": "first"})
+    )
+    if len(out) < n_antes:
+        print(f"[!] PP 2026 x día: {n_antes - len(out)} filas duplicadas (misma sede+fecha); se sumó PPTO DIARIO por día.")
     return out
 
 def leer_archivo_robusto(ruta, header_val=0, sep_val=','):
@@ -313,74 +326,110 @@ def diarizar_mensual(df_mensual, escenario):
     return pd.DataFrame(filas_diarias)
 
 def ejecutar_etl():
+    """
+    Carga en hechos_excel_diario lo que exista en disco.
+    Solo borra y reemplaza los escenarios para los que hay datos en esta corrida;
+    el resto (ej. Presupuesto_Diarizado si faltan Excels mensuales) se conserva en BD.
+    Historico_Diario_FTP no se toca (lo carga el FTP).
+    """
     print("[OK] Iniciando extraccion robusta de Excel...\n")
     ruta_v_mensual, ruta_t_mensual, ruta_presup, ruta_2025 = obtener_rutas()
-    
-    if not all([ruta_v_mensual, ruta_t_mensual, ruta_presup]):
-        print("[X] Faltan archivos por detectar (ventas mensual, transacciones, presupuesto).")
-        return
+
+    partes = []
+    escenarios_cargar = []
+
+    # Bloque mensual: ventas + transacciones + presupuesto (misma lógica que antes).
+    if all([ruta_v_mensual, ruta_t_mensual, ruta_presup]):
+        df_pres_mensual = procesar_presupuesto(ruta_presup)
+        df_pres_diarizado = diarizar_mensual(df_pres_mensual, "Presupuesto_Diarizado")
+        df_v_mensual = procesar_historico_mensual(ruta_v_mensual, "Ventas")
+        df_t_mensual = procesar_historico_mensual(ruta_t_mensual, "Transacciones")
+        if not df_v_mensual.empty and not df_t_mensual.empty:
+            df_hist_mensual = pd.merge(
+                df_v_mensual, df_t_mensual, on=["Punto de venta", "Mes", "Anio"], how="outer"
+            ).fillna(0)
+        else:
+            df_hist_mensual = pd.DataFrame()
+        df_hist_diarizado = diarizar_mensual(df_hist_mensual, "Historico_Diarizado")
+        if not df_pres_diarizado.empty:
+            partes.append(df_pres_diarizado)
+            escenarios_cargar.append("Presupuesto_Diarizado")
+            print(f"[OK] Presupuesto_Diarizado: {len(df_pres_diarizado)} registros.")
+        if not df_hist_diarizado.empty:
+            partes.append(df_hist_diarizado)
+            escenarios_cargar.append("Historico_Diarizado")
+            print(f"[OK] Historico_Diarizado: {len(df_hist_diarizado)} registros.")
+    else:
+        print(
+            "[!] Faltan ventas mensual, transacciones y/o presupuesto mensual: "
+            "no se actualizan Presupuesto_Diarizado ni Historico_Diarizado (se conservan en BD)."
+        )
+
     if not ruta_2025:
-        print("[!] No se encontro archivo 2025 por dia; se conservara Historico_Diario ya cargado en BD (ej. desde FTP).")
+        print("[!] No se encontro CSV/archivo 2025 por dia; Historico_Diario no se actualiza salvo que exista archivo.")
     df_2025_diario = procesar_diario_2025(ruta_2025) if ruta_2025 else pd.DataFrame()
     if not df_2025_diario.empty:
-        print(f"[OK] Historico 2025 por dia (CSV/Micros): {len(df_2025_diario)} registros (Escenario=Historico_Diario).")
+        partes.append(df_2025_diario)
+        escenarios_cargar.append("Historico_Diario")
+        print(f"[OK] Historico_Diario (CSV/Micros): {len(df_2025_diario)} registros.")
 
-    df_pres_mensual = procesar_presupuesto(ruta_presup)
-    df_pres_diarizado = diarizar_mensual(df_pres_mensual, 'Presupuesto_Diarizado')
-
-    df_v_mensual = procesar_historico_mensual(ruta_v_mensual, 'Ventas')
-    df_t_mensual = procesar_historico_mensual(ruta_t_mensual, 'Transacciones')
-    
-    if not df_v_mensual.empty and not df_t_mensual.empty:
-        df_hist_mensual = pd.merge(df_v_mensual, df_t_mensual, on=['Punto de venta', 'Mes', 'Anio'], how='outer').fillna(0)
-    else:
-        df_hist_mensual = pd.DataFrame()
-        
-    df_hist_diarizado = diarizar_mensual(df_hist_mensual, 'Historico_Diarizado')
     ruta_ventas_mes_ano = obtener_ruta_ventas_mes_ano()
-    df_2025_excel = procesar_historico_2025_desde_mensual(ruta_ventas_mes_ano) if ruta_ventas_mes_ano else pd.DataFrame()
+    df_2025_excel = (
+        procesar_historico_2025_desde_mensual(ruta_ventas_mes_ano) if ruta_ventas_mes_ano else pd.DataFrame()
+    )
     if not df_2025_excel.empty:
-        print(f"[OK] Histórico 2025 desde Excel (ventas por mes por año): {len(df_2025_excel)} registros.")
+        partes.append(df_2025_excel)
+        escenarios_cargar.append("Historico_2025_Excel")
+        print(f"[OK] Historico_2025_Excel (ventas por mes por año): {len(df_2025_excel)} registros.")
+
     ruta_pp_2026_dia = obtener_ruta_pp_2026_dia()
     df_pp_2026_dia = procesar_presupuesto_diario_2026(ruta_pp_2026_dia) if ruta_pp_2026_dia else pd.DataFrame()
     if not df_pp_2026_dia.empty:
-        print(f"[OK] Presupuesto diario 2026 (PP x día): {len(df_pp_2026_dia)} registros.")
-    partes = [df_hist_diarizado, df_pres_diarizado, df_pp_2026_dia, df_2025_excel, df_2025_diario]
-    df_final = pd.concat([p for p in partes if not p.empty], ignore_index=True)
-    if df_final.empty:
+        partes.append(df_pp_2026_dia)
+        escenarios_cargar.append("Presupuesto_Diario_2026")
+        print(f"[OK] Presupuesto_Diario_2026 (PP x día): {len(df_pp_2026_dia)} registros.")
+    elif ruta_pp_2026_dia:
+        print("[!] PP 2026 x día: archivo encontrado pero sin filas válidas.")
+
+    if not partes:
+        print("[X] No hay fuentes Excel/CSV con datos para cargar en esta corrida.")
         return
 
-    # 🎯 MAPEO DE GRUPOS DESDE sede_grupo_lookup (fuente única)
+    df_final = pd.concat(partes, ignore_index=True)
+
     try:
         df_lookup = pd.read_sql(text("SELECT store_id, grupo FROM sede_grupo_lookup"), con=engine_local)
-        GRUPOS_DESDE_BD = dict(zip(df_lookup["store_id"].astype(str).str.strip().str.upper().str.lstrip("0"), df_lookup["grupo"]))
+        GRUPOS_DESDE_BD = dict(
+            zip(
+                df_lookup["store_id"].astype(str).str.strip().str.upper().str.lstrip("0"),
+                df_lookup["grupo"],
+            )
+        )
     except Exception as e:
         print(f"[!] No se pudo cargar sede_grupo_lookup: {e}. Usando mapeo de respaldo.")
         GRUPOS_DESDE_BD = {
-            '2': 'RBB', '3': 'RBB', 'F08': 'RBB', '201': 'RBB',
-            '404': 'PLAZAS', '402': 'PLAZAS', '401': 'PLAZAS', '405': 'PLAZAS',
-            'F09': 'PARADERO FR', 'F05': 'PARADERO FR', 'F04': 'PARADERO FR',
-            '301': 'PARADERO', '304': 'PARADERO', '305': 'PARADERO',
-            '611': 'EXPRÉS', '502': 'EXPRÉS', '612': 'EXPRÉS', '4': 'EXPRÉS', '004': 'EXPRÉS',
-            '702': 'EXPRÉS', '604': 'EXPRÉS', '615': 'EXPRÉS'
+            "2": "RBB", "3": "RBB", "F08": "RBB", "201": "RBB",
+            "404": "PLAZAS", "402": "PLAZAS", "401": "PLAZAS", "405": "PLAZAS",
+            "F09": "PARADERO FR", "F05": "PARADERO FR", "F04": "PARADERO FR",
+            "301": "PARADERO", "304": "PARADERO", "305": "PARADERO",
+            "611": "EXPRÉS", "502": "EXPRÉS", "612": "EXPRÉS", "4": "EXPRÉS", "004": "EXPRÉS",
+            "702": "EXPRÉS", "604": "EXPRÉS", "615": "EXPRÉS",
         }
 
     def asignar_grupo_final(row):
-        codigo = str(row['StoreID_External']).strip().upper().lstrip('0')
-        return GRUPOS_DESDE_BD.get(codigo, 'OTRO')
+        codigo = str(row["StoreID_External"]).strip().upper().lstrip("0")
+        return GRUPOS_DESDE_BD.get(codigo, "OTRO")
 
-    df_final['Agrupacion'] = df_final.apply(asignar_grupo_final, axis=1)
+    df_final["Agrupacion"] = df_final.apply(asignar_grupo_final, axis=1)
 
-    # Solo reemplazar los escenarios que estamos cargando.
-    # Nota: Historico_Diario_FTP lo carga etl_ftp_ventas_2025.py (no se borra aquí).
-    escenarios_a_borrar = ['Presupuesto_Diarizado', 'Historico_Diarizado', 'Presupuesto_Diario_2026', 'Historico_2025_Excel', 'Historico_Diario']
-    placeholders = ", ".join([f"'{e}'" for e in escenarios_a_borrar])
+    escenarios_unicos = list(dict.fromkeys(escenarios_cargar))
+    placeholders = ", ".join([f"'{e}'" for e in escenarios_unicos])
     with engine_local.connect() as conn:
         conn.execute(text(f"DELETE FROM hechos_excel_diario WHERE Escenario IN ({placeholders})"))
         conn.commit()
 
-    print(f"[OK] Guardando {len(df_final)} registros unificados...")
-    df_final.to_sql('hechos_excel_diario', con=engine_local, if_exists='append', index=False)
+    print(f"[OK] Reemplazando escenarios {escenarios_unicos} — {len(df_final)} registros...")
+    df_final.to_sql("hechos_excel_diario", con=engine_local, if_exists="append", index=False)
     print("[OK] Consolidado con exito!")
 
 if __name__ == "__main__":
