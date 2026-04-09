@@ -1160,6 +1160,106 @@ def _html_tabla_informe(headers, row_tuples, col_var_index=None):
     html += "</tbody></table>"
     return html
 
+
+def _p9_fmt_pct_ratio(x, with_arrow=True):
+    """x como ratio (ej. 0.12 = 12%)."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    s = f"{x * 100:.1f}%".replace(".", ",")
+    if with_arrow:
+        s += " ▲" if x >= 0 else " ▼"
+    return s
+
+
+def _p9_td_style_pct(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    if x >= 0:
+        return "background-color:#e8f5e9;color:#1b5e20;font-weight:600;"
+    return "background-color:#ffebee;color:#b71c1c;font-weight:600;"
+
+
+def _html_tabla_p9(headers, rows_layout):
+    """
+    Informe ejecutivo ancho (pestaña 9).
+    rows_layout: lista de (tr_class, celdas: list[str], styles: list[str|None] alineado a celdas).
+    tr_class: '' | 'p9-grupo' | 'p9-total'
+    """
+    css = (
+        "<style>"
+        ".tbl-p9-wrap { overflow-x: auto; max-width: 100%; margin: 8px 0; border: 1px solid #bdbdbd; padding: 8px; background: #fafafa; }"
+        ".tbl-p9 { border-collapse: collapse; font-size: 0.78rem; white-space: nowrap; min-width: 100%; }"
+        ".tbl-p9 th { background: #37474f; color: #fff; font-weight: 700; padding: 8px 6px; border: 1px solid #263238; text-align: center; vertical-align: middle; line-height: 1.2; }"
+        ".tbl-p9 td { padding: 6px 8px; border: 1px solid #cfd8dc; vertical-align: middle; }"
+        ".tbl-p9 td.t-left { text-align: left; }"
+        ".tbl-p9 td.num { text-align: right; font-variant-numeric: tabular-nums; }"
+        ".tbl-p9 tr.p9-grupo td { background: #546e7a; color: #fff; font-weight: 700; }"
+        ".tbl-p9 tr.p9-grupo td.num { color: #fff; }"
+        ".tbl-p9 tr.p9-total td { background: #f9a825; color: #1a1510; font-weight: 800; }"
+        "</style>"
+    )
+    html = css + '<div class="tbl-p9-wrap"><table class="tbl-p9"><thead><tr>'
+    html += "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    html += "</tr></thead><tbody>"
+    for tr_cls, cells, styles in rows_layout:
+        cls = tr_cls.strip()
+        row_tag = f'<tr class="{cls}">' if cls else "<tr>"
+        html += row_tag
+        for i, (v, stl) in enumerate(zip(cells, styles)):
+            tda = "t-left" if i == 0 else "num"
+            sty = f' style="{stl}"' if stl else ""
+            html += f'<td class="{tda}"{sty}>{_esc(v)}</td>'
+        html += "</tr>"
+    html += "</tbody></table></div>"
+    return html
+
+
+def _p9_sum_hist_mes_anio(df_fin, codigos, mes: int, dia_hasta: int, anio_hist: int, MAPEO_SEDES, s_filtro, g_filtro):
+    """Suma ventas históricas (FTP/diario) por sede, del 1 al día dia_hasta del mes en anio_hist (calendario)."""
+    if df_fin is None or df_fin.empty:
+        return {str(c).strip().upper().lstrip("0") or str(c): 0.0 for c in codigos}
+    _, last_d = calendar.monthrange(anio_hist, mes)
+    d_end = min(dia_hasta, last_d)
+    d0 = date(anio_hist, mes, 1)
+    d1 = date(anio_hist, mes, d_end)
+    mask = df_fin["Escenario"].isin(["Historico_Diario_FTP", "Historico_Diario"])
+    fd = pd.to_datetime(df_fin["Fecha"]).dt.date
+    sub = df_fin.loc[mask & (fd >= d0) & (fd <= d1)].copy()
+    if sub.empty:
+        return {str(c).strip().upper().lstrip("0") or str(c): 0.0 for c in codigos}
+    sub["Sede_Nom"] = sub["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1])
+    sub["Grupo"] = sub["codigo_sede_crudo"].apply(lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0])
+    sub = sub[sub["Sede_Nom"].isin(s_filtro) & sub["Grupo"].isin(g_filtro)]
+    if sub.empty:
+        return {str(c).strip().upper().lstrip("0") or str(c): 0.0 for c in codigos}
+    sub["FechaN"] = pd.to_datetime(sub["Fecha"], errors="coerce").dt.normalize()
+    s_ftp = sub[sub["Escenario"] == "Historico_Diario_FTP"].groupby(
+        ["codigo_sede_crudo", "FechaN"]
+    )["Ventas"].sum()
+    s_diario = sub[sub["Escenario"] == "Historico_Diario"].groupby(
+        ["codigo_sede_crudo", "FechaN"]
+    )["Ventas"].sum()
+    s_day = s_ftp.combine_first(s_diario) if not s_ftp.empty else s_diario
+    s = s_day.groupby(level=0).sum() if not s_day.empty else pd.Series(dtype=float)
+    out = {}
+    for c in codigos:
+        ck = str(c).strip().upper().lstrip("0") or str(c)
+        v = 0.0
+        for k in (c, ck, str(c).strip()):
+            if k in s.index:
+                v = float(s.loc[k])
+                break
+        if v == 0.0:
+            try:
+                k2 = str(int(float(str(c))))
+                if k2 in s.index:
+                    v = float(s.loc[k2])
+            except (ValueError, TypeError, KeyError):
+                pass
+        out[ck] = v
+    return out
+
+
 def _p8_fecha_venta_aa(d_2026: date, lunes_vs_lunes: bool) -> date:
     """Fecha en 2025 comparable a d_2026 (misma lógica que pestaña 2)."""
     if lunes_vs_lunes:
@@ -1731,7 +1831,7 @@ def _main_impl():
         titulo_fecha = ""
 
     # Pestaña 5 (Transacciones 2026 vs 2025) oculta hasta tener transacciones 2025 por día.
-    tab1, tab2, tab3, tab4, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab6, tab7, tab8, tab9 = st.tabs([
         "1. Ventas al público del día",
         "2. Comparativo 2026 vs 2025",
         "3. Presupuesto diario vs ventas al público",
@@ -1739,6 +1839,7 @@ def _main_impl():
         "6. Tendencia 2025 vs 2026 (mes a mes)",
         "7. Venta diaria comparativa",
         "8. Proyección vs presupuesto (diario)",
+        "9. Informe ejecutivo (2026 vs 2025)",
     ])
 
     with tab1:
@@ -2758,6 +2859,287 @@ def _main_impl():
                     )
         else:
             st.info("Selecciona fechas en el panel izquierdo.")
+
+    with tab9:
+        if not f_fin:
+            st.info("Selecciona la fecha «Hasta» en el panel izquierdo.")
+        else:
+            anio = int(f_fin.year)
+            anio_ant = anio - 1
+            st.markdown(
+                f"<p class='section-title'>9. Informe ejecutivo — seguimiento <strong>{anio}</strong> vs histórico <strong>{anio_ant}</strong></p>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"Las métricas de **venta, presupuesto, cumplimiento y proyección** usan el año de **«Hasta»** ({anio}). "
+                f"Solo la columna de **venta año anterior** trae el mismo mes en **{anio_ant}** (histórico diario cargado en la BD), para comparar."
+            )
+            mes_nom = MESES_ES[f_fin.month].upper()
+            fd_fin = pd.to_datetime(df_fin["Fecha"]).dt.date
+            mask_esc_yy = (fd_fin >= date(anio, 1, 1)) & (fd_fin <= date(anio, 12, 31)) & (
+                df_fin["Escenario"] == "Presupuesto_Diario_2026"
+            )
+            esc_p9 = "Presupuesto_Diario_2026" if not df_fin.loc[mask_esc_yy].empty else "Presupuesto_Diarizado"
+            codigos_p9 = _p8_codigos_en_orden(MAPEO_SEDES, s_filtro, g_filtro)
+            if not codigos_p9:
+                st.info("No hay restaurantes con los filtros actuales.")
+            else:
+                df_fin_p9 = df_fin[df_fin["Escenario"] == esc_p9].copy()
+                if df_fin_p9.empty:
+                    ppto_anual_s = pd.Series(dtype=float)
+                    ppto_ytd_s = pd.Series(dtype=float)
+                else:
+                    df_fin_p9["_Fd"] = pd.to_datetime(df_fin_p9["Fecha"]).dt.date
+                    df_fin_p9["Sede_Nom"] = df_fin_p9["codigo_sede_crudo"].apply(
+                        lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+                    )
+                    df_fin_p9["Grupo"] = df_fin_p9["codigo_sede_crudo"].apply(
+                        lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+                    )
+                    df_fin_p9 = df_fin_p9[
+                        df_fin_p9["Sede_Nom"].isin(s_filtro) & df_fin_p9["Grupo"].isin(g_filtro)
+                    ]
+                    if df_fin_p9.empty:
+                        ppto_anual_s = pd.Series(dtype=float)
+                        ppto_ytd_s = pd.Series(dtype=float)
+                    else:
+                        ppto_anual_s = df_fin_p9[
+                            (df_fin_p9["_Fd"] >= date(anio, 1, 1))
+                            & (df_fin_p9["_Fd"] <= date(anio, 12, 31))
+                        ].groupby("codigo_sede_crudo")["Ventas"].sum()
+                        ppto_ytd_s = df_fin_p9[
+                            (df_fin_p9["_Fd"] >= date(anio, 1, 1)) & (df_fin_p9["_Fd"] <= f_fin)
+                        ].groupby("codigo_sede_crudo")["Ventas"].sum()
+
+                vacum_s = (
+                    df_r_acum.set_index("codigo_sede_crudo")["Venta_Real"]
+                    if not df_r_acum.empty and "Venta_Real" in df_r_acum.columns
+                    else pd.Series(dtype=float)
+                )
+                pacum_s = (
+                    df_p_acum.set_index("codigo_sede_crudo")["Ventas"]
+                    if not df_p_acum.empty and "Ventas" in df_p_acum.columns
+                    else pd.Series(dtype=float)
+                )
+
+                fo_ytd = df_op[(df_op["Fecha"] >= date(anio, 1, 1)) & (df_op["Fecha"] <= f_fin)].copy()
+                if not fo_ytd.empty:
+                    fo_ytd["Venta_Real"] = fo_ytd["VlrBruto"] - fo_ytd["VlrTotalDesc"].abs()
+                    fo_ytd["Sede_Nom"] = fo_ytd["codigo_sede_crudo"].apply(
+                        lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[1]
+                    )
+                    fo_ytd["Grupo"] = fo_ytd["codigo_sede_crudo"].apply(
+                        lambda x: MAPEO_SEDES.get(x, ("OTRO", "OTRO"))[0]
+                    )
+                    fo_ytd = fo_ytd[fo_ytd["Sede_Nom"].isin(s_filtro) & fo_ytd["Grupo"].isin(g_filtro)]
+                    if "Cantidad_Transacciones" in fo_ytd.columns:
+                        gbf = fo_ytd.groupby("codigo_sede_crudo").agg(
+                            Venta_Real=("Venta_Real", "sum"),
+                            Cantidad_Transacciones=("Cantidad_Transacciones", "sum"),
+                        )
+                    else:
+                        gbf = fo_ytd.groupby("codigo_sede_crudo").agg(Venta_Real=("Venta_Real", "sum"))
+                        gbf["Cantidad_Transacciones"] = 0.0
+                else:
+                    gbf = pd.DataFrame()
+
+                if not df_op_acum.empty and "Cantidad_Transacciones" in df_op_acum.columns:
+                    tx_mes_s = df_op_acum.groupby("codigo_sede_crudo")["Cantidad_Transacciones"].sum()
+                else:
+                    tx_mes_s = pd.Series(dtype=float)
+
+                v_aa_by_cod = _p9_sum_hist_mes_anio(
+                    df_fin, codigos_p9, f_fin.month, f_fin.day, anio_ant, MAPEO_SEDES, s_filtro, g_filtro
+                )
+
+                detalles = []
+                for cod in codigos_p9:
+                    g, nom = MAPEO_SEDES.get(cod, ("", str(cod)))
+                    ck = str(cod).strip().upper().lstrip("0") or str(cod)
+                    pm = float(_series_val(ppto_mes_por_sede, cod))
+                    vacum = float(_series_val(vacum_s, cod))
+                    pacum = float(_series_val(pacum_s, cod))
+                    pan = float(_series_val(ppto_anual_s, cod))
+                    yv = float(_series_val(gbf["Venta_Real"], cod)) if not gbf.empty and "Venta_Real" in gbf.columns else 0.0
+                    yp = float(_series_val(ppto_ytd_s, cod))
+                    proy = (yv / yp * pan) if yp and yp > 0 and pan else 0.0
+                    cump = (vacum / pacum) if pacum and pacum > 0 else None
+                    r_proy_pan = (proy / pan) if pan and pan > 0 else None
+                    r_var_pan = ((proy / pan) - 1.0) if pan and pan > 0 else None
+                    var_mon = proy - pan
+                    v_aa = float(v_aa_by_cod.get(ck, 0.0))
+                    r_proy_v_aa = ((proy / v_aa) - 1.0) if v_aa and v_aa > 0 else None
+                    txm = float(_series_val(tx_mes_s, cod))
+                    ticket = (vacum / txm) if txm and txm > 0 else 0.0
+                    detalles.append(
+                        {
+                            "Grupo": g,
+                            "nom": nom,
+                            "pm": pm,
+                            "vacum": vacum,
+                            "pacum": pacum,
+                            "pan": pan,
+                            "yv": yv,
+                            "yp": yp,
+                            "proy": proy,
+                            "cump": cump,
+                            "r_proy_pan": r_proy_pan,
+                            "r_var_pan": r_var_pan,
+                            "var_mon": var_mon,
+                            "v_aa": v_aa,
+                            "r_proy_v_aa": r_proy_v_aa,
+                            "txm": txm,
+                            "ticket": ticket,
+                        }
+                    )
+
+                def _p9_cells_from_metrics(
+                    label,
+                    pm,
+                    vacum,
+                    cump,
+                    proy,
+                    r_proy_pan,
+                    r_var_pan,
+                    var_mon,
+                    v_aa,
+                    r_proy_v_aa,
+                    txm,
+                    ticket,
+                ):
+                    cump_s = _p9_fmt_pct_ratio(cump) if cump is not None else "—"
+                    rp_s = _p9_fmt_pct_ratio(r_proy_pan) if r_proy_pan is not None else "—"
+                    rv_s = _p9_fmt_pct_ratio(r_var_pan) if r_var_pan is not None else "—"
+                    r_aa_s = _p9_fmt_pct_ratio(r_proy_v_aa) if r_proy_v_aa is not None else "—"
+                    styles = [None] * 12
+                    styles[3] = _p9_td_style_pct(cump - 1.0) if cump is not None else None
+                    styles[5] = _p9_td_style_pct(r_proy_pan - 1.0) if r_proy_pan is not None else None
+                    styles[6] = _p9_td_style_pct(r_var_pan) if r_var_pan is not None else None
+                    styles[9] = _p9_td_style_pct(r_proy_v_aa) if r_proy_v_aa is not None else None
+                    return [
+                        label,
+                        f_moneda_informe(pm),
+                        f_moneda_informe(vacum),
+                        cump_s,
+                        f_moneda_informe(proy),
+                        rp_s,
+                        rv_s,
+                        f_moneda_informe(var_mon),
+                        f_moneda_informe(v_aa),
+                        r_aa_s,
+                        _fmt_unidades(txm) if txm else "0",
+                        f_moneda_informe(ticket),
+                    ], styles
+
+                rows_layout = []
+                hdr = [
+                    "SEDE",
+                    "PRESUPUESTO FINANCIERO",
+                    f"VENTA {mes_nom} {anio}",
+                    "% CUMP. FRENTE AL PTO",
+                    f"PROY. ESTIMADA {anio}",
+                    f"% PROY. / PPTO {anio}",
+                    "% PROY. VS PRESUP.",
+                    "DIF. $ (PROY. − PPTO AÑO)",
+                    f"VENTAS {anio_ant} ({mes_nom})",
+                    f"VAR. PROY. {anio} VS VENTA {anio_ant}",
+                    "TRANSACCIONES",
+                    "TICKET PROM.",
+                ]
+
+                for grp in ORDEN_GRUPOS:
+                    dgrp = [d for d in detalles if d["Grupo"] == grp]
+                    if not dgrp:
+                        continue
+                    dgrp.sort(key=lambda x: ORDEN_SEDES_MAP.get(x["nom"], len(ORDEN_SEDES)))
+                    for d in dgrp:
+                        cells, stls = _p9_cells_from_metrics(
+                            d["nom"],
+                            d["pm"],
+                            d["vacum"],
+                            d["cump"],
+                            d["proy"],
+                            d["r_proy_pan"],
+                            d["r_var_pan"],
+                            d["var_mon"],
+                            d["v_aa"],
+                            d["r_proy_v_aa"],
+                            d["txm"],
+                            d["ticket"],
+                        )
+                        rows_layout.append(("", cells, stls))
+                    sum_pm = sum(x["pm"] for x in dgrp)
+                    sum_v = sum(x["vacum"] for x in dgrp)
+                    sum_pa = sum(x["pacum"] for x in dgrp)
+                    sum_pan = sum(x["pan"] for x in dgrp)
+                    sum_yv = sum(x["yv"] for x in dgrp)
+                    sum_yp = sum(x["yp"] for x in dgrp)
+                    sum_tx = sum(x["txm"] for x in dgrp)
+                    sum_v_aa = sum(x["v_aa"] for x in dgrp)
+                    proy_g = (sum_yv / sum_yp * sum_pan) if sum_yp and sum_yp > 0 else 0.0
+                    cump_g = (sum_v / sum_pa) if sum_pa and sum_pa > 0 else None
+                    rpp_g = (proy_g / sum_pan) if sum_pan and sum_pan > 0 else None
+                    rvp_g = ((proy_g / sum_pan) - 1.0) if sum_pan and sum_pan > 0 else None
+                    vm_g = proy_g - sum_pan
+                    rpv_aa_g = ((proy_g / sum_v_aa) - 1.0) if sum_v_aa and sum_v_aa > 0 else None
+                    tk_g = (sum_v / sum_tx) if sum_tx and sum_tx > 0 else 0.0
+                    cells_g, stls_g = _p9_cells_from_metrics(
+                        f"▪ Total {grp}",
+                        sum_pm,
+                        sum_v,
+                        cump_g,
+                        proy_g,
+                        rpp_g,
+                        rvp_g,
+                        vm_g,
+                        sum_v_aa,
+                        rpv_aa_g,
+                        sum_tx,
+                        tk_g,
+                    )
+                    rows_layout.append(("p9-grupo", cells_g, stls_g))
+
+                tot_pm = sum(x["pm"] for x in detalles)
+                tot_v = sum(x["vacum"] for x in detalles)
+                tot_pa = sum(x["pacum"] for x in detalles)
+                tot_pan = sum(x["pan"] for x in detalles)
+                tot_yv = sum(x["yv"] for x in detalles)
+                tot_yp = sum(x["yp"] for x in detalles)
+                tot_tx = sum(x["txm"] for x in detalles)
+                tot_v_aa = sum(x["v_aa"] for x in detalles)
+                proy_t = (tot_yv / tot_yp * tot_pan) if tot_yp and tot_yp > 0 else 0.0
+                cump_t = (tot_v / tot_pa) if tot_pa and tot_pa > 0 else None
+                rpp_t = (proy_t / tot_pan) if tot_pan and tot_pan > 0 else None
+                rvp_t = ((proy_t / tot_pan) - 1.0) if tot_pan and tot_pan > 0 else None
+                vm_t = proy_t - tot_pan
+                rpv_aa_t = ((proy_t / tot_v_aa) - 1.0) if tot_v_aa and tot_v_aa > 0 else None
+                tk_t = (tot_v / tot_tx) if tot_tx and tot_tx > 0 else 0.0
+                cells_t, stls_t = _p9_cells_from_metrics(
+                    "TOTAL GENERAL",
+                    tot_pm,
+                    tot_v,
+                    cump_t,
+                    proy_t,
+                    rpp_t,
+                    rvp_t,
+                    vm_t,
+                    tot_v_aa,
+                    rpv_aa_t,
+                    tot_tx,
+                    tk_t,
+                )
+                rows_layout.append(("p9-total", cells_t, stls_t))
+
+                st.markdown(_html_tabla_p9(hdr, rows_layout), unsafe_allow_html=True)
+                st.caption(
+                    f"**Mes de referencia:** «Hasta» {f_fin.strftime('%d/%m/%Y')} · **Presupuesto:** {esc_p9}. "
+                    "**Presupuesto financiero** = suma del presupuesto diario del **mes completo** de esa fecha. "
+                    f"**Venta {mes_nom}** = acumulado del 1 al día seleccionado (ventas al público {anio}). "
+                    "**% Cump.** = venta acum. ÷ presupuesto acum. (mismos días del mes). "
+                    f"**Proy. {anio}** = (Σ venta YTD ÷ Σ ppto YTD) × **presupuesto anual {anio}** por sede; totales de grupo recalculados. "
+                    f"**Ventas {anio_ant}** = mismo mes en calendario (1–{f_fin.day} o hasta fin de mes) desde histórico diario en BD. "
+                    f"**Var. proy. vs venta {anio_ant}** = proyección anual {anio} ÷ venta de ese período en {anio_ant} − 1."
+                )
 
 if __name__ == "__main__":
     main()
