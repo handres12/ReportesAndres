@@ -534,14 +534,13 @@ def _mapeo_respaldo():
 }
 
 @st.cache_data(ttl=120)
-def load_ventas_operativas():
+def load_ventas_operativas(_cache_version=2):
     """
     Ventas y transacciones por sede/día.
     - Ventas: raw_ventas_2026 (Detalle); StoreID = Co.
-    - Transacciones: tabla Invoice (NEWACRventas) → Invoice.StoreID se relaciona con Store
-      para obtener Store.StoreID_External (Co) y nombre; se agrupa por (Co, día) y se cuenta
-      COUNT(DISTINCT InvoiceID). Ticket promedio = venta del día / transacciones (misma venta
-      que se muestra en cada campo).
+    - Transacciones: Invoice → dim_store (StoreID interno) → StoreID_External (Co).
+    - Claves del resultado: **UNION** de (sede, día) con venta y con factura. Si solo hubiera factura
+      sin Detalle ese día, antes se perdían transacciones (sesgo típico ene/feb si el SQL de ítems llegó tarde).
     """
     engine = get_engine()
     # Ventas: Co = raw_ventas_2026.StoreID (Detalle.Co). Normalización igual que ETL para coincidir con MAPEO_SEDES.
@@ -566,14 +565,20 @@ def load_ventas_operativas():
         INNER JOIN dim_store s ON TRIM(CAST(COALESCE(i.StoreID, '') AS TEXT)) = TRIM(CAST(COALESCE(s.StoreID, '') AS TEXT))
         WHERE i.InvoiceID IS NOT NULL AND TRIM(CAST(COALESCE(s.StoreID_External, '') AS TEXT)) <> ''
         GROUP BY 1, 2
+    ),
+    BaseDia AS (
+        SELECT codigo_sede_crudo, Fecha FROM VentasDiarias
+        UNION
+        SELECT codigo_sede_crudo, Fecha FROM TransaccionesDiarias
     )
     SELECT 
         COALESCE(s_main.Store_Name, 'DESCONOCIDA') AS Store_Name,
-        v.Fecha, v.codigo_sede_crudo, COALESCE(v.VlrBruto, 0) AS VlrBruto,
+        b.Fecha, b.codigo_sede_crudo, COALESCE(v.VlrBruto, 0) AS VlrBruto,
         COALESCE(v.VlrTotalDesc, 0) AS VlrTotalDesc, COALESCE(t.Cantidad_Transacciones, 0) AS Cantidad_Transacciones
-    FROM VentasDiarias v
-    LEFT JOIN dim_store s_main ON v.codigo_sede_crudo = {norm_co % "COALESCE(s_main.StoreID_External, s_main.StoreID)"}
-    LEFT JOIN TransaccionesDiarias t ON v.codigo_sede_crudo = t.codigo_sede_crudo AND v.Fecha = t.Fecha
+    FROM BaseDia b
+    LEFT JOIN VentasDiarias v ON b.codigo_sede_crudo = v.codigo_sede_crudo AND b.Fecha = v.Fecha
+    LEFT JOIN TransaccionesDiarias t ON b.codigo_sede_crudo = t.codigo_sede_crudo AND b.Fecha = t.Fecha
+    LEFT JOIN dim_store s_main ON b.codigo_sede_crudo = {norm_co % "COALESCE(s_main.StoreID_External, s_main.StoreID)"}
     """
     try:
         with engine.connect() as conn:
@@ -601,6 +606,47 @@ def load_ventas_operativas():
         return df
     except Exception as e:
         return pd.DataFrame()
+
+
+def _diag_fuentes_pestana6():
+    """Conteos en SQLite: ventas 2026 vs facturas y encaje con dim_store (pestaña 6)."""
+    engine = get_engine()
+    lines = []
+    try:
+        with engine.connect() as conn:
+            n_v = int(conn.execute(text("SELECT COUNT(*) FROM raw_ventas_2026")).scalar() or 0)
+            n_i = int(conn.execute(text("SELECT COUNT(*) FROM raw_invoice_2026")).scalar() or 0)
+            n_ds = int(conn.execute(text("SELECT COUNT(*) FROM dim_store")).scalar() or 0)
+            n_join = int(conn.execute(text("""
+                SELECT COUNT(*) FROM raw_invoice_2026 i
+                INNER JOIN dim_store s ON TRIM(CAST(COALESCE(i.StoreID, '') AS TEXT)) = TRIM(CAST(COALESCE(s.StoreID, '') AS TEXT))
+            """)).scalar() or 0)
+            fac = int(conn.execute(text(
+                "SELECT COUNT(DISTINCT InvoiceID) FROM raw_invoice_2026 WHERE InvoiceID IS NOT NULL"
+            )).scalar() or 0)
+            mx = conn.execute(text("SELECT MAX(Fecha) FROM raw_ventas_2026")).scalar()
+            mi = conn.execute(text("SELECT MAX(BusinessDate) FROM raw_invoice_2026")).scalar()
+            lines.append(f"- **raw_ventas_2026:** {n_v:,} filas · última fecha **{mx}**")
+            lines.append(f"- **raw_invoice_2026:** {n_i:,} filas · **{fac:,}** facturas únicas (InvoiceID) · última fecha **{mi}**")
+            lines.append(f"- **dim_store:** {n_ds:,} tiendas")
+            lines.append(
+                f"- **Facturas con JOIN a dim_store:** {n_join:,} "
+                "(la app cuenta transacciones solo si `Invoice.StoreID` = `dim_store.StoreID`)"
+            )
+            if n_i > 0 and n_join == 0:
+                lines.append(
+                    "- **Problema:** hay facturas pero ninguna enlaza con `dim_store`. "
+                    "Ejecuta `python ejecutar_etls.py` (maestros primero) o revisa catálogo **Store** en NEWACRVentas."
+                )
+            elif n_i == 0 and n_v > 0:
+                lines.append(
+                    "- **Problema:** hay ventas en Detalle pero **cero** facturas en SQLite. "
+                    "Revisa conexión a NEWACRVentas y el bloque Invoice en `etl_maestros.py` o corre `recargar_invoice_2026_full.py`."
+                )
+    except Exception as ex:
+        lines.append(f"- Error al consultar la base local: `{ex}`")
+    return lines
+
 
 @st.cache_data(ttl=120)
 def load_ventas_horarias_2026(_cache_version=5):
@@ -1732,9 +1778,16 @@ def _main_impl():
     s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key=f"p_sedes_{_refresh}")
     grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
     g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key=f"p_grupos_{_refresh}")
-    
+    if st.sidebar.button(
+        "Recargar datos en pantalla",
+        help="Quita la caché de Streamlit (~2 min) y vuelve a leer bi_local_data.db sin reiniciar el servidor.",
+    ):
+        st.cache_data.clear()
+        st.session_state["_refresh"] = int(st.session_state.get("_refresh", 0)) + 1
+        st.rerun()
+
     st.sidebar.markdown("---")
-    # Sin botón «Refrescar datos»: los datos se actualizan al ejecutar ETLs y reiniciar la app (Ctrl+C y volver a correr streamlit).
+    # Tras ejecutar ETLs en disco, usa «Recargar datos en pantalla» o reinicia streamlit (Ctrl+C).
     # El comparativo 2025 vs 2026 (pestaña 2) arma fechas y df_h **dentro de la pestaña 2**, después del toggle.
 
     # Datos en el rango [f_inicio, f_fin] (se agregan por sede en las tablas)
@@ -2155,6 +2208,13 @@ def _main_impl():
         # Tendencia 2025 vs 2026 mes a mes: gráfico % crecimiento y tablas VR NETO x año/mes y YTD
         tipo_tienda_label = "(* TODOS *)" if (set(s_filtro) == set(sedes_map) and set(g_filtro) == set(grupos_map)) else "(filtro aplicado)"
         rango_fecha_6 = f"Del: {f_inicio.strftime('%d/%m/%Y')} Al: {f_fin.strftime('%d/%m/%Y')}" if f_inicio and f_fin else ""
+        with st.expander("Diagnóstico: por qué no se ven transacciones 2026 o faltan datos", expanded=False):
+            st.markdown(
+                "La pestaña 6 arma **2026** desde `load_ventas_operativas()`: ventas en **raw_ventas_2026** y "
+                "transacciones en **raw_invoice_2026** unidas a **dim_store** (mismo `StoreID` interno que en SQL Server). "
+                "**2024/2025** salen del Excel *venta 2024 y 2025.xlsx* si está en la carpeta del proyecto."
+            )
+            st.markdown("\n".join(_diag_fuentes_pestana6()))
         # Agregados 2026 por mes (desde df_op, hasta f_fin)
         df_op_6 = df_op.copy()
         df_op_6["Fecha"] = pd.to_datetime(df_op_6["Fecha"])
@@ -2175,6 +2235,17 @@ def _main_impl():
             mes_26["Ticket"] = mes_26["Venta_Real"] / mes_26["Transacciones"].replace(0, float("nan"))
         else:
             mes_26 = pd.DataFrame(columns=["Mes", "Venta_Real", "Transacciones", "Ticket"])
+        if mes_26.empty and not df_op_6.empty:
+            _fe = pd.to_datetime(df_op_6["Fecha"], errors="coerce")
+            if (_fe.dt.year == 2026).any() and f_fin is not None:
+                try:
+                    if hasattr(f_fin, "year") and f_fin.year < 2026:
+                        st.warning(
+                            "Hay ventas de **2026** en la base, pero el filtro **Hasta** en la barra lateral está en **2025 o antes**. "
+                            "Sube «Hasta» a una fecha de 2026 para ver meses y transacciones del año en curso."
+                        )
+                except Exception:
+                    pass
         # Agregados 2025 por mes (desde df_fin Historico)
         df_fin_25 = df_fin[(pd.to_datetime(df_fin["Fecha"]).dt.year == 2025) & (df_fin["Escenario"].str.contains("Historico", na=False))].copy()
         if not df_fin_25.empty:
@@ -3043,8 +3114,8 @@ def _main_impl():
                     "DIF. $ (PROY. − PPTO AÑO)",
                     f"VENTAS {anio_ant} ({mes_nom})",
                     f"VAR. PROY. {anio} VS VENTA {anio_ant}",
-                    "TRANSACCIONES",
-                    "TICKET PROM.",
+                    f"Nº TRANSACC. {mes_nom}",
+                    f"TICKET {mes_nom}",
                 ]
 
                 for grp in ORDEN_GRUPOS:
@@ -3135,11 +3206,55 @@ def _main_impl():
                     f"**Mes de referencia:** «Hasta» {f_fin.strftime('%d/%m/%Y')} · **Presupuesto:** {esc_p9}. "
                     "**Presupuesto financiero** = suma del presupuesto diario del **mes completo** de esa fecha. "
                     f"**Venta {mes_nom}** = acumulado del 1 al día seleccionado (ventas al público {anio}). "
+                    f"**Nº transacciones y ticket ({mes_nom})** = solo ese mes (días 1–{f_fin.day}); no incluyen enero ni febrero si «Hasta» está en marzo o después. "
+                    "Para ver todo el año hasta la fecha (ene + feb + …), abre el panel «Acumulado … YTD» debajo. "
                     "**% Cump.** = venta acum. ÷ presupuesto acum. (mismos días del mes). "
                     f"**Proy. {anio}** = (Σ venta YTD ÷ Σ ppto YTD) × **presupuesto anual {anio}** por sede; totales de grupo recalculados. "
                     f"**Ventas {anio_ant}** = mismo mes en calendario (1–{f_fin.day} o hasta fin de mes) desde histórico diario en BD. "
                     f"**Var. proy. vs venta {anio_ant}** = proyección anual {anio} ÷ venta de ese período en {anio_ant} − 1."
                 )
+                with st.expander(
+                    f"Acumulado {anio} (1 ene → {f_fin.strftime('%d/%m/%Y')}): ventas y transacciones YTD",
+                    expanded=False,
+                ):
+                    st.caption(
+                        "Aquí sí se suman enero, febrero y el resto hasta «Hasta». "
+                        "Si las transacciones YTD de esos meses siguen muy bajas frente a marzo, ejecuta "
+                        "`python recargar_invoice_2026_full.py` y revisa el diagnóstico en pestaña 6."
+                    )
+                    if gbf.empty:
+                        st.info("Sin datos operativos en ese rango.")
+                    else:
+                        ytd_rows = []
+                        for cod in codigos_p9:
+                            g, nom = MAPEO_SEDES.get(cod, ("", str(cod)))
+                            vr = float(_series_val(gbf["Venta_Real"], cod)) if "Venta_Real" in gbf.columns else 0.0
+                            tx = (
+                                float(_series_val(gbf["Cantidad_Transacciones"], cod))
+                                if "Cantidad_Transacciones" in gbf.columns
+                                else 0.0
+                            )
+                            tk = (vr / tx) if tx and tx > 0 else 0.0
+                            ytd_rows.append(
+                                {
+                                    "Grupo": g,
+                                    "Sede": nom,
+                                    "Venta YTD": vr,
+                                    "N transacc YTD": int(round(tx)),
+                                    "Ticket YTD": tk,
+                                }
+                            )
+                        df_ytd = pd.DataFrame(ytd_rows)
+                        st.dataframe(
+                            df_ytd,
+                            hide_index=True,
+                            use_container_width=True,
+                            column_config={
+                                "Venta YTD": st.column_config.NumberColumn(format="%.0f"),
+                                "N transacc YTD": st.column_config.NumberColumn(format="%d"),
+                                "Ticket YTD": st.column_config.NumberColumn(format="%.0f"),
+                            },
+                        )
 
 if __name__ == "__main__":
     main()

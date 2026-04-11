@@ -5,13 +5,25 @@ from sqlalchemy import text, func
 from database import engine_sql_server_sec, engine_local, SessionLocalDB
 from models import DimStore, DimItemGroup, DimItemFamily, DimMenuItem, RawInvoice2026
 
-# Re-traer siempre los últimos N días de Invoice para que no queden días con transacciones incompletas.
-# Si un día (ej. 11-mar) solo tiene una tienda en raw_invoice_2026, es porque ese día no se ha
-# vuelto a traer desde que se cargó; aumentar este valor hace que se rellenen más días cada vez que corre el ETL.
+# --- Invoice -> raw_invoice_2026 (transacciones en la app, pestaña 6, etc.) ---
+#
+# Modo por defecto INVOICE_INCREMENTAL_MODE=month (recomendado):
+#   - Un mes "cerrado" NO se vuelve a borrar ni a reemplazar: todo BusinessDate estrictamente anterior
+#     al día 1 del mes calendario EN CURSO queda congelado en SQLite.
+#   - Solo se DELETE + INSERT desde ese día 1 hasta fin de 2026 (mes abierto + días futuros del año).
+#   - Así enero/febrero no se pierden ni se "pisan" al avanzar marzo/abril, siempre que el mes
+#     haya quedado bien cargado antes de que termine (conviene ETL diario hasta fin de mes).
+#
+# Modo INVOICE_INCREMENTAL_MODE=rolling (legacy): ventana de INVOICE_RELOAD_DAYS desde la ultima fecha;
+#   puede dejar meses viejos con pocos días si nunca entraron en la ventana. No recomendado.
+#
+# Recarga completa año 2026 (corregir historia o primer carga mala): FULL_RELOAD_INVOICE_2026=1
+#   o: python recargar_invoice_2026_full.py
+#
 INVOICE_RELOAD_DAYS = int(os.getenv("INVOICE_RELOAD_DAYS", "45"))
 INICIO_2026 = date(2026, 1, 1)
-# Recarga completa 2026 (útil una vez para repoblar todos los días): ejecutar con env FULL_RELOAD_INVOICE_2026=1
 FULL_RELOAD_INVOICE_2026 = os.getenv("FULL_RELOAD_INVOICE_2026", "").strip().lower() in ("1", "true", "yes")
+INVOICE_INCREMENTAL_MODE = os.getenv("INVOICE_INCREMENTAL_MODE", "month").strip().lower()
 
 def extraer_maestros():
     if engine_sql_server_sec is None:
@@ -70,11 +82,23 @@ def extraer_maestros():
                 session.execute(text("DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '2026-01-01'"))
                 session.commit()
         else:
-            # Re-traer últimos N días para que no queden días con transacciones incompletas
-            max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, 'date') else max_fecha_inv
-            desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
-            fecha_inicio_inv = max(desde, INICIO_2026).strftime('%Y-%m-%d')
-            print(f"Última fecha de Invoice: {max_date}. Re-cargando desde {fecha_inicio_inv} (últimos {INVOICE_RELOAD_DAYS} días)...")
+            hoy = date.today()
+            if INVOICE_INCREMENTAL_MODE == "rolling":
+                max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, "date") else max_fecha_inv
+                desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
+                fecha_inicio_inv = max(desde, INICIO_2026).strftime("%Y-%m-%d")
+                print(
+                    f"[rolling] Ultima fecha Invoice en SQLite: {max_date}. "
+                    f"Borrar y recargar desde {fecha_inicio_inv} (ultimos {INVOICE_RELOAD_DAYS} dias)."
+                )
+            else:
+                inicio_mes_actual = date(hoy.year, hoy.month, 1)
+                inicio_borrado = max(inicio_mes_actual, INICIO_2026)
+                fecha_inicio_inv = inicio_borrado.strftime("%Y-%m-%d")
+                print(
+                    f"[month] Hoy calendario: {hoy}. Meses cerrados (< {fecha_inicio_inv}) NO se modifican. "
+                    f"Solo se borra y recarga Invoice con BusinessDate >= {fecha_inicio_inv}."
+                )
             session.execute(text(f"DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
             session.commit()
 
