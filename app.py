@@ -1765,12 +1765,17 @@ def _main_impl():
         st.sidebar.markdown("---")
     st.sidebar.header("Filtros")
     u_f = df_op['Fecha'].max()
+    u_i = df_op['Fecha'].min()
     if not isinstance(u_f, date):
         u_f = u_f.date() if hasattr(u_f, 'date') else date.today()
+    if not isinstance(u_i, date):
+        u_i = u_i.date() if hasattr(u_i, 'date') else u_f
+    # Por defecto: todo el rango con datos (antes Desde=Hasta=último día y parecía «sin ventas»).
+    f_desde_default = u_i
 
     st.sidebar.subheader("Rango de fechas")
     _refresh = st.session_state.get("_refresh", 0)
-    f_inicio = st.sidebar.date_input("Desde", u_f, key=f"f_desde_{_refresh}")
+    f_inicio = st.sidebar.date_input("Desde", f_desde_default, key=f"f_desde_{_refresh}")
     f_fin = st.sidebar.date_input("Hasta", u_f, key=f"f_hasta_{_refresh}")
     if f_fin < f_inicio:
         f_fin = f_inicio
@@ -1778,9 +1783,10 @@ def _main_impl():
 
     f_sel = f_inicio  # para títulos y acumulado "hasta" usamos f_fin donde aplique
 
-    sedes_map = sorted(list(set([v[1] for v in MAPEO_SEDES.values()])))
+    # Incluir OTRO: códigos sin fila en sede_grupo_lookup caen en ('OTRO','OTRO') y antes quedaban fuera del multiselect.
+    sedes_map = sorted(set([v[1] for v in MAPEO_SEDES.values()]) | {"OTRO"})
     s_filtro = st.sidebar.multiselect("Restaurantes", options=sedes_map, default=sedes_map, key=f"p_sedes_{_refresh}")
-    grupos_map = sorted(list(set([v[0] for v in MAPEO_SEDES.values()])))
+    grupos_map = sorted(set([v[0] for v in MAPEO_SEDES.values()]) | {"OTRO"})
     g_filtro = st.sidebar.multiselect("Grupos", options=grupos_map, default=grupos_map, key=f"p_grupos_{_refresh}")
     if st.sidebar.button(
         "Recargar datos en pantalla",
@@ -1798,10 +1804,17 @@ def _main_impl():
     df_r = df_op[(df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)].copy()
     # Siempre crear la columna Venta_Real (aunque el DataFrame esté vacío) para evitar KeyError en la nube
     df_r['Venta_Real'] = df_r['VlrBruto'] - df_r['VlrTotalDesc'].abs()
+    _mask_rango = (df_op['Fecha'] >= f_inicio) & (df_op['Fecha'] <= f_fin)
+    _n_en_rango = int(_mask_rango.sum()) if len(df_op) else 0
     if not df_r.empty:
         df_r['Sede_Nom'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[1])
         df_r['Grupo'] = df_r['codigo_sede_crudo'].apply(lambda x: MAPEO_SEDES.get(x, ('OTRO', 'OTRO'))[0])
         df_r = df_r[df_r['Sede_Nom'].isin(s_filtro) & df_r['Grupo'].isin(g_filtro)]
+    if _n_en_rango > 0 and df_r.empty:
+        st.warning(
+            "Hay datos en el rango de fechas, pero **ninguna fila pasa los filtros** de Restaurantes/Grupos. "
+            "Activa **OTRO** si hay puntos de venta sin mapear en `sede_grupo_lookup`, o amplía la selección."
+        )
 
     # Presupuesto diario: solo pestaña 3 usa PP 2026 x día (Presupuesto_Diario_2026) si existe; si no, Presupuesto_Diarizado
     df_p_raw_pp_dia = df_fin[(df_fin['Fecha'] >= f_inicio) & (df_fin['Fecha'] <= f_fin) & (df_fin['Escenario'] == 'Presupuesto_Diario_2026')].copy()
