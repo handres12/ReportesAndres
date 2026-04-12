@@ -643,6 +643,10 @@ def _diag_fuentes_pestana6():
                     "- **Problema:** hay ventas en Detalle pero **cero** facturas en SQLite. "
                     "Revisa conexión a NEWACRVentas y el bloque Invoice en `etl_maestros.py` o corre `recargar_invoice_2026_full.py`."
                 )
+            lines.append(
+                "- **Varios puntos sin venta o mal agrupados:** en consola ejecuta "
+                "`python diagnostico_ventas_por_sede.py` (Co en `raw_ventas_2026` vs `sede_grupo_lookup` y `dim_store`)."
+            )
     except Exception as ex:
         lines.append(f"- Error al consultar la base local: `{ex}`")
     return lines
