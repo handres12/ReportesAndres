@@ -1699,15 +1699,23 @@ def main():
         st.caption("Si esto aparece en la nube, el informe local funciona pero el entorno web falla por lo anterior.")
 
 def _main_impl():
-    # Exigir login: en local siempre; en la web solo si [auth] Microsoft está configurado (acceso por correo).
-    requiere_login = (not _en_streamlit_cloud()) or _auth_microsoft_configured()
+    # Exigir login siempre. En Streamlit Cloud, solo Microsoft/OAuth (no usuario/clave local).
+    requiere_login = True
     if requiere_login:
         try:
             if not _esta_logueado():
-                if _auth_microsoft_configured():
-                    _pagina_login_microsoft()
+                if _en_streamlit_cloud():
+                    if _auth_microsoft_configured() or _oauth_cloud_get_config():
+                        _pagina_login_microsoft()
+                    else:
+                        st.markdown(BRAND_CSS, unsafe_allow_html=True)
+                        st.error("Acceso bloqueado: falta configurar autenticación Microsoft en Streamlit Cloud.")
+                        st.info("Configura [auth] en Secrets (client_id, client_secret, redirect_uri y server_metadata_url) para habilitar el acceso.")
                 else:
-                    _pagina_login_registro()
+                    if _auth_microsoft_configured():
+                        _pagina_login_microsoft()
+                    else:
+                        _pagina_login_registro()
                 return
         except Exception:
             _pagina_login_registro()
