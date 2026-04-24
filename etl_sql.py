@@ -9,7 +9,7 @@ def extraer_datos_sql():
         print("[ERROR] No hay conexión a SQL Server (engine_sql_server=None).")
         print("Causas típicas: falta `pyodbc` en el venv o faltan variables .env de SQL Server.")
         print("Solución: instala el driver y pyodbc, y configura SQL_SERVER_HOST/USER/PASS/DB en .env.")
-        return
+        return False
     print("[OK] Iniciando extraccion de VENTAS (Base Principal - Tabla: Detalle)...")
     
     # Consulta optimizada para la tabla Detalle
@@ -72,11 +72,11 @@ def extraer_datos_sql():
         # Carga a SQLite
         df_diario.to_sql('raw_ventas_2026', con=engine_local, if_exists='append', index=False)
         print(f"OK Ventas cargadas en SQLite ({len(df_diario)} registros diarios).")
+        return True
         
     except Exception as e:
         print(f"Error critico en ETL de Ventas: {e}")
-
-    print("\nProceso de ventas finalizado.")
+        return False
 
 if __name__ == "__main__":
     extraer_datos_sql()

@@ -30,8 +30,9 @@ def extraer_maestros():
         print("[ERROR] No hay conexión a SQL Server secundario (engine_sql_server_sec=None).")
         print("Causas típicas: falta `pyodbc` en el venv o faltan variables .env de SQL Server.")
         print("Solución: instala el driver y pyodbc, y configura SQL_SERVER_HOST/USER/PASS/DB y SQL_SERVER_DB_SEC en .env.")
-        return
+        return False
     print("Iniciando extracción desde base de datos secundaria (NEWACRVentas)...\n")
+    ok_global = True
     
     tablas_maestras = {
         'Store': 'dim_store',
@@ -65,59 +66,47 @@ def extraer_maestros():
             
         except Exception as e:
             print(f"  -> Error en {tabla_origen}: {e}")
+            ok_global = False
 
     # 2. Transacciones: facturas (InvoiceID) de Invoice desde 2026-01-01, por día por tienda -> raw_invoice_2026
     print("\nExtrayendo Invoice (facturas por día por tienda, desde 2026-01-01)...")
     
     with SessionLocalDB() as session:
         max_fecha_inv = session.query(func.max(RawInvoice2026.BusinessDate)).scalar()
-        
-        if max_fecha_inv is None or FULL_RELOAD_INVOICE_2026:
-            if FULL_RELOAD_INVOICE_2026:
-                print("FULL_RELOAD_INVOICE_2026=1: recarga completa de Invoice 2026 desde 2026-01-01.")
-            else:
-                print("No se encontraron Invoices previos. Se hará carga inicial desde 2026-01-01.")
-            fecha_inicio_inv = '2026-01-01'
-            if max_fecha_inv is not None:
-                session.execute(text("DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '2026-01-01'"))
-                session.commit()
+    
+    if max_fecha_inv is None or FULL_RELOAD_INVOICE_2026:
+        if FULL_RELOAD_INVOICE_2026:
+            print("FULL_RELOAD_INVOICE_2026=1: recarga completa de Invoice 2026 desde 2026-01-01.")
         else:
-            hoy = date.today()
-            if INVOICE_INCREMENTAL_MODE == "rolling":
-                max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, "date") else max_fecha_inv
-                desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
-                fecha_inicio_inv = max(desde, INICIO_2026).strftime("%Y-%m-%d")
-                print(
-                    f"[rolling] Ultima fecha Invoice en SQLite: {max_date}. "
-                    f"Borrar y recargar desde {fecha_inicio_inv} (ultimos {INVOICE_RELOAD_DAYS} dias)."
-                )
-            else:
-                inicio_mes_actual = date(hoy.year, hoy.month, 1)
-                inicio_borrado = max(inicio_mes_actual, INICIO_2026)
-                fecha_inicio_inv = inicio_borrado.strftime("%Y-%m-%d")
-                print(
-                    f"[month] Hoy calendario: {hoy}. Meses cerrados (< {fecha_inicio_inv}) NO se modifican. "
-                    f"Solo se borra y recarga Invoice con BusinessDate >= {fecha_inicio_inv}."
-                )
-            session.execute(text(f"DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
-            session.commit()
+            print("No se encontraron Invoices previos. Se hará carga inicial desde 2026-01-01.")
+        fecha_inicio_inv = '2026-01-01'
+    else:
+        hoy = date.today()
+        if INVOICE_INCREMENTAL_MODE == "rolling":
+            max_date = max_fecha_inv.date() if hasattr(max_fecha_inv, "date") else max_fecha_inv
+            desde = max_date - timedelta(days=INVOICE_RELOAD_DAYS)
+            fecha_inicio_inv = max(desde, INICIO_2026).strftime("%Y-%m-%d")
+            print(
+                f"[rolling] Ultima fecha Invoice en SQLite: {max_date}. "
+                f"Borrar y recargar desde {fecha_inicio_inv} (ultimos {INVOICE_RELOAD_DAYS} dias)."
+            )
+        else:
+            inicio_mes_actual = date(hoy.year, hoy.month, 1)
+            inicio_borrado = max(inicio_mes_actual, INICIO_2026)
+            fecha_inicio_inv = inicio_borrado.strftime("%Y-%m-%d")
+            print(
+                f"[month] Hoy calendario: {hoy}. Meses cerrados (< {fecha_inicio_inv}) NO se modifican. "
+                f"Solo se borra y recarga Invoice con BusinessDate >= {fecha_inicio_inv}."
+            )
 
     try:
-        # 2.a) Traer facturas (InvoiceID) de Invoice -> raw_invoice_2026. La app agrega COUNT(InvoiceID) por día y tienda.
+        # 2.a) Traer primero desde SQL; solo si esto sale bien se reemplaza el rango local.
         query_invoice = f"""
         SELECT * FROM Invoice 
         WHERE BusinessDate >= '{fecha_inicio_inv}' AND BusinessDate < '2027-01-01'
         """
         df_invoice = pd.read_sql(query_invoice, con=engine_sql_server_sec)
         
-        if df_invoice.empty:
-            print("OK raw_invoice_2026: sin filas nuevas (ya al día).")
-        else:
-            df_invoice = df_invoice.dropna(subset=['InvoiceID', 'StoreID'])
-            df_invoice = df_invoice.drop_duplicates(subset=['InvoiceID', 'StoreID'])
-            df_invoice.to_sql('raw_invoice_2026', con=engine_local, if_exists='append', index=False)
-            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas -> transacciones por dia por tienda.")
-
         # 2.b) Opcional: tabla auxiliar venta_horaria_2026 (solo si la app usa ventas/transacciones por hora).
         print("\nActualizando tabla auxiliar venta_horaria_2026...")
         query_invoice_hora = f"""
@@ -132,7 +121,8 @@ def extraer_maestros():
         ORDER BY StoreID, BusinessDate, Transaction_Date
         """
         df_inv = pd.read_sql(query_invoice_hora, con=engine_sql_server_sec)
-        # Crear tabla siempre (así la app no falla si no se ha corrido el ETL o no hay datos)
+
+        # Si ya se pudo leer SQL, ahora sí reemplazamos el rango local de forma segura.
         with SessionLocalDB() as session:
             try:
                 session.execute(text("""
@@ -144,8 +134,22 @@ def extraer_maestros():
                 session.commit()
             except Exception:
                 pass
+
+            session.execute(text(f"DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
             session.execute(text(f"DELETE FROM venta_horaria_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
             session.commit()
+
+        # Insertar facturas para transacciones diarias.
+        if df_invoice.empty:
+            print("OK raw_invoice_2026: sin filas nuevas (ya al día).")
+        else:
+            df_invoice = df_invoice.dropna(subset=['InvoiceID', 'StoreID'])
+            df_invoice = df_invoice.drop_duplicates(subset=['InvoiceID', 'StoreID'])
+            df_invoice.to_sql('raw_invoice_2026', con=engine_local, if_exists='append', index=False)
+            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas -> transacciones por dia por tienda.")
+
+        # Insertar agregados por hora.
+        print("\nActualizando tabla auxiliar venta_horaria_2026...")
 
         if df_inv.empty:
             print("No hay filas Invoice para generar venta_horaria_2026 (tabla creada vacía).")
@@ -167,8 +171,10 @@ def extraer_maestros():
         
     except Exception as e:
         print(f"Error al procesar Invoice / venta_horaria_2026: {e}")
+        ok_global = False
 
     print("\nProceso finalizado.")
+    return ok_global
 
 if __name__ == "__main__":
     extraer_maestros()

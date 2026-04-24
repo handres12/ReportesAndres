@@ -6,7 +6,7 @@ import base64
 import traceback
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import calendar
 import altair as alt
 
@@ -493,6 +493,50 @@ MESES_ES = {
 }
 # Días de la semana (lunes=0, domingo=6, según date.weekday())
 DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+def _hoy_bogota() -> date:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Bogota")).date()
+    except Exception:
+        return date.today()
+
+
+def _fecha_hasta_default_informe(ultima_fecha_con_datos: date) -> date:
+    """
+    Valor por defecto del filtro «Hasta»: ayer (Bogotá) o la última fecha presente en datos,
+    la que sea menor. Así el informe no arranca en «hoy» sin cierre ni por encima de lo cargado.
+    """
+    ayer = _hoy_bogota() - timedelta(days=1)
+    return min(ultima_fecha_con_datos, ayer)
+
+
+def _scalar_sql_a_fecha(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    try:
+        return pd.to_datetime(val).date()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120)
+def load_fechas_fuente_sqlite(_cache_version=1):
+    """Última fecha con venta (Detalle) y con factura (Invoice) en SQLite; pueden diferir unos días."""
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            mv = conn.execute(text("SELECT MAX(DATE(Fecha)) FROM raw_ventas_2026")).scalar()
+            mi = conn.execute(
+                text("SELECT MAX(DATE(BusinessDate)) FROM raw_invoice_2026 WHERE InvoiceID IS NOT NULL")
+            ).scalar()
+        return {"max_ventas": _scalar_sql_a_fecha(mv), "max_invoice": _scalar_sql_a_fecha(mi)}
+    except Exception:
+        return {"max_ventas": None, "max_invoice": None}
+
 
 @st.cache_resource
 def get_engine():
@@ -1778,13 +1822,22 @@ def _main_impl():
         u_f = u_f.date() if hasattr(u_f, 'date') else date.today()
     if not isinstance(u_i, date):
         u_i = u_i.date() if hasattr(u_i, 'date') else u_f
-    # Por defecto: todo el rango con datos (antes Desde=Hasta=último día y parecía «sin ventas»).
-    f_desde_default = u_i
+    f_fin_default = _fecha_hasta_default_informe(u_f)
+    # «Ventas al público del día»: por defecto un solo día (referencia), no acumulado desde enicio de año.
+    f_desde_default = f_fin_default
 
     st.sidebar.subheader("Rango de fechas")
     _refresh = st.session_state.get("_refresh", 0)
+    _fx = load_fechas_fuente_sqlite()
+    _mv, _mi = _fx.get("max_ventas"), _fx.get("max_invoice")
+    _mv_s = _mv.strftime("%d/%m/%Y") if _mv else "—"
+    _mi_s = _mi.strftime("%d/%m/%Y") if _mi else "—"
+    st.sidebar.caption(
+        f"Última **venta** (Detalle): {_mv_s} · última **transacción** (Invoice): {_mi_s}. "
+        f"Rango por defecto: **{f_desde_default}** → **{f_fin_default}** (ayer Bogotá o último día con filas en el informe)."
+    )
     f_inicio = st.sidebar.date_input("Desde", f_desde_default, key=f"f_desde_{_refresh}")
-    f_fin = st.sidebar.date_input("Hasta", u_f, key=f"f_hasta_{_refresh}")
+    f_fin = st.sidebar.date_input("Hasta", f_fin_default, key=f"f_hasta_{_refresh}")
     if f_fin < f_inicio:
         f_fin = f_inicio
         st.sidebar.caption("Hasta no puede ser anterior a Desde. Se usó la misma fecha.")
@@ -1922,13 +1975,21 @@ def _main_impl():
 
     with tab1:
         st.markdown(f'<p class="section-title">{titulo_fecha}</p>', unsafe_allow_html=True)
-        # Aviso: hasta qué fecha hay datos (las ventas vienen de SQL Server → ETL → SQLite)
-        fecha_max = df_op['Fecha'].max()
-        if hasattr(fecha_max, 'date'):
-            fecha_max = fecha_max.date()
-        st.caption(f"Datos de ventas disponibles **hasta el {fecha_max.strftime('%d/%m/%Y')}**. Si el día que buscas es más reciente, la base principal (SQL Server, tabla Detalle) aún no tiene esa fecha cargada; cuando esté disponible, ejecuta de nuevo los ETLs (**ejecutar_etls.py**).")
+        _fx1 = load_fechas_fuente_sqlite()
+        _mv1, _mi1 = _fx1.get("max_ventas"), _fx1.get("max_invoice")
+        _mv1s = _mv1.strftime("%d/%m/%Y") if _mv1 else "—"
+        _mi1s = _mi1.strftime("%d/%m/%Y") if _mi1 else "—"
+        st.caption(
+            f"**Ventas** (Micros → Detalle → `raw_ventas_2026`): último día con datos **{_mv1s}**. "
+            f"**Transacciones** (Invoice → `raw_invoice_2026`): último día con datos **{_mi1s}**. "
+            "Si Invoice va más adelantado que Detalle, en los días recientes puede haber **transacciones con venta $0** "
+            "hasta que cargue el día en la base principal; ejecuta de nuevo **ejecutar_etls.py** o el pipeline diario."
+        )
         if df_r.empty:
-            st.info("No hay ventas al público para el día seleccionado.")
+            st.info(
+                "No hay filas para el rango y filtros elegidos (ni ventas ni transacciones). "
+                "Amplía fechas en la barra lateral o revisa Restaurantes/Grupo."
+            )
         else:
             agg_dict = {'Venta_Real': 'sum', 'Sede_Nom': 'first', 'Grupo': 'first'}
             if 'Cantidad_Transacciones' in df_r.columns:
