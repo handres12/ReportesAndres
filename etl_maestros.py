@@ -25,6 +25,49 @@ INICIO_2026 = date(2026, 1, 1)
 FULL_RELOAD_INVOICE_2026 = os.getenv("FULL_RELOAD_INVOICE_2026", "").strip().lower() in ("1", "true", "yes")
 INVOICE_INCREMENTAL_MODE = os.getenv("INVOICE_INCREMENTAL_MODE", "month").strip().lower()
 
+def _upsert_sqlite(table_name: str, df: pd.DataFrame, pk_cols: list[str]) -> int:
+    """Inserta/actualiza en SQLite sin borrar filas históricas."""
+    if df is None or df.empty:
+        return 0
+
+    cols = [str(c) for c in df.columns]
+    if not cols:
+        return 0
+
+    placeholders = ", ".join([f":{c}" for c in cols])
+    updates = [c for c in cols if c not in pk_cols]
+    if updates:
+        update_sql = ", ".join([f"{c} = excluded.{c}" for c in updates])
+        stmt_sql = (
+            f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT({', '.join(pk_cols)}) DO UPDATE SET {update_sql}"
+        )
+    else:
+        stmt_sql = (
+            f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT({', '.join(pk_cols)}) DO NOTHING"
+        )
+    stmt = text(stmt_sql)
+
+    rows = []
+    for rec in df.to_dict(orient="records"):
+        row = {}
+        for c in cols:
+            v = rec.get(c)
+            if pd.isna(v):
+                v = None
+            elif isinstance(v, pd.Timestamp):
+                # sqlite3 no siempre adapta Timestamp de pandas.
+                v = v.to_pydatetime()
+            row[c] = v
+        rows.append(row)
+
+    with SessionLocalDB() as session:
+        session.execute(stmt, rows)
+        session.commit()
+    return len(rows)
+
+
 def extraer_maestros():
     if engine_sql_server_sec is None:
         print("[ERROR] No hay conexión a SQL Server secundario (engine_sql_server_sec=None).")
@@ -35,14 +78,14 @@ def extraer_maestros():
     ok_global = True
     
     tablas_maestras = {
-        'Store': 'dim_store',
-        'ItemGroup': 'dim_item_group',
-        'ItemFamily': 'dim_item_family',
-        'MenuItem': 'dim_menu_item'
+        'Store': ('dim_store', ['StoreID']),
+        'ItemGroup': ('dim_item_group', ['StoreID', 'GroupID']),
+        'ItemFamily': ('dim_item_family', ['storeID', 'FamilyID']),
+        'MenuItem': ('dim_menu_item', ['storeID', 'MenuItemID'])
     }
     
     # 1. Extraer los catálogos completos (Full Load por seguridad de cambios de nombre)
-    for tabla_origen, tabla_destino in tablas_maestras.items():
+    for tabla_origen, (tabla_destino, pk_cols) in tablas_maestras.items():
         print(f"Extrayendo tabla maestra: {tabla_origen} (Carga Completa)...")
         try:
             query = f"SELECT * FROM {tabla_origen}"
@@ -57,12 +100,8 @@ def extraer_maestros():
             elif tabla_origen == 'MenuItem':
                 df = df.dropna(subset=['storeID', 'MenuItemID']).drop_duplicates(subset=['storeID', 'MenuItemID'])
 
-            with SessionLocalDB() as session:
-                session.execute(text(f"DELETE FROM {tabla_destino}"))
-                session.commit()
-                
-            df.to_sql(tabla_destino, con=engine_local, if_exists='append', index=False)
-            print(f"  -> OK Cargados {len(df)} registros.")
+            n = _upsert_sqlite(tabla_destino, df, pk_cols)
+            print(f"  -> OK Cargados/actualizados {n} registros.")
             
         except Exception as e:
             print(f"  -> Error en {tabla_origen}: {e}")
@@ -122,7 +161,7 @@ def extraer_maestros():
         """
         df_inv = pd.read_sql(query_invoice_hora, con=engine_sql_server_sec)
 
-        # Si ya se pudo leer SQL, ahora sí reemplazamos el rango local de forma segura.
+        # Crear tabla/índice de horaria para upsert (sin borrar histórico).
         with SessionLocalDB() as session:
             try:
                 session.execute(text("""
@@ -131,13 +170,13 @@ def extraer_maestros():
                         Venta_Hora FLOAT, Transacciones_Hora INTEGER
                     )
                 """))
+                session.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_venta_horaria_2026
+                    ON venta_horaria_2026 (StoreID, BusinessDate, Hora)
+                """))
                 session.commit()
             except Exception:
                 pass
-
-            session.execute(text(f"DELETE FROM raw_invoice_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
-            session.execute(text(f"DELETE FROM venta_horaria_2026 WHERE BusinessDate >= '{fecha_inicio_inv}'"))
-            session.commit()
 
         # Insertar facturas para transacciones diarias.
         if df_invoice.empty:
@@ -145,8 +184,8 @@ def extraer_maestros():
         else:
             df_invoice = df_invoice.dropna(subset=['InvoiceID', 'StoreID'])
             df_invoice = df_invoice.drop_duplicates(subset=['InvoiceID', 'StoreID'])
-            df_invoice.to_sql('raw_invoice_2026', con=engine_local, if_exists='append', index=False)
-            print(f"OK raw_invoice_2026: {len(df_invoice)} facturas (InvoiceID) cargadas/actualizadas -> transacciones por dia por tienda.")
+            n_inv = _upsert_sqlite('raw_invoice_2026', df_invoice, ['InvoiceID', 'StoreID'])
+            print(f"OK raw_invoice_2026: {n_inv} facturas (InvoiceID) cargadas/actualizadas -> transacciones por dia por tienda.")
 
         # Insertar agregados por hora.
         print("\nActualizando tabla auxiliar venta_horaria_2026...")
@@ -166,8 +205,26 @@ def extraer_maestros():
                 Transacciones_Hora=("CheckSubTotal", "count"),
             )
 
-            df_horaria.to_sql("venta_horaria_2026", con=engine_local, if_exists="append", index=False)
-            print(f"OK venta_horaria_2026: {len(df_horaria)} filas (tabla auxiliar).")
+            stmt_h = text("""
+                INSERT INTO venta_horaria_2026 (StoreID, BusinessDate, Hora, Venta_Hora, Transacciones_Hora)
+                VALUES (:StoreID, :BusinessDate, :Hora, :Venta_Hora, :Transacciones_Hora)
+                ON CONFLICT(StoreID, BusinessDate, Hora) DO UPDATE SET
+                    Venta_Hora = excluded.Venta_Hora,
+                    Transacciones_Hora = excluded.Transacciones_Hora
+            """)
+            rows_h = []
+            for rec in df_horaria.to_dict(orient="records"):
+                rows_h.append({
+                    "StoreID": rec["StoreID"],
+                    "BusinessDate": rec["BusinessDate"],
+                    "Hora": int(rec["Hora"]),
+                    "Venta_Hora": float(rec["Venta_Hora"] or 0),
+                    "Transacciones_Hora": int(rec["Transacciones_Hora"] or 0),
+                })
+            with SessionLocalDB() as session:
+                session.execute(stmt_h, rows_h)
+                session.commit()
+            print(f"OK venta_horaria_2026: {len(rows_h)} filas cargadas/actualizadas (tabla auxiliar).")
         
     except Exception as e:
         print(f"Error al procesar Invoice / venta_horaria_2026: {e}")

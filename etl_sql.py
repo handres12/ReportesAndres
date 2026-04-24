@@ -3,6 +3,30 @@ from sqlalchemy import text
 from database import engine_sql_server, engine_local, SessionLocalDB
 from models import RawVentas2026
 
+def _upsert_raw_ventas(df_diario: pd.DataFrame) -> int:
+    """Inserta/actualiza por (StoreID, Fecha) sin borrar histórico."""
+    if df_diario.empty:
+        return 0
+    rows = []
+    for r in df_diario.to_dict(orient='records'):
+        rows.append({
+            "StoreID": str(r["StoreID"]),
+            "Fecha": r["Fecha"],
+            "VlrBruto": float(r["VlrBruto"] or 0),
+            "VlrTotalDesc": float(r["VlrTotalDesc"] or 0),
+        })
+    stmt = text("""
+        INSERT INTO raw_ventas_2026 (StoreID, Fecha, VlrBruto, VlrTotalDesc)
+        VALUES (:StoreID, :Fecha, :VlrBruto, :VlrTotalDesc)
+        ON CONFLICT(StoreID, Fecha) DO UPDATE SET
+            VlrBruto = excluded.VlrBruto,
+            VlrTotalDesc = excluded.VlrTotalDesc
+    """)
+    with SessionLocalDB() as session:
+        session.execute(stmt, rows)
+        session.commit()
+    return len(rows)
+
 
 def extraer_datos_sql():
     if engine_sql_server is None:
@@ -64,14 +88,9 @@ def extraer_datos_sql():
             'VlrTotalDesc': 'sum'
         })
         
-        # Limpieza de la tabla local antes de la carga
-        with SessionLocalDB() as session:
-            session.execute(text("DELETE FROM raw_ventas_2026"))
-            session.commit()
-            
-        # Carga a SQLite
-        df_diario.to_sql('raw_ventas_2026', con=engine_local, if_exists='append', index=False)
-        print(f"OK Ventas cargadas en SQLite ({len(df_diario)} registros diarios).")
+        # Carga acumulada (upsert): nunca borra histórico.
+        n = _upsert_raw_ventas(df_diario)
+        print(f"OK Ventas cargadas/actualizadas en SQLite ({n} registros diarios).")
         return True
         
     except Exception as e:
