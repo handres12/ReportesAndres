@@ -1823,7 +1823,7 @@ def _main_impl():
     if not isinstance(u_i, date):
         u_i = u_i.date() if hasattr(u_i, 'date') else u_f
     f_fin_default = _fecha_hasta_default_informe(u_f)
-    # «Ventas al público del día»: por defecto un solo día (referencia), no acumulado desde enicio de año.
+    # «Ventas al público del día»: por defecto un solo día (referencia), no acumulado desde inicio de año.
     f_desde_default = f_fin_default
 
     st.sidebar.subheader("Rango de fechas")
